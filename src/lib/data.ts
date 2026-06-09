@@ -113,7 +113,7 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
     await Promise.all([
       supabase.from("round_entry").select("*").eq("round_id", roundId),
       supabase.from("sector").select("*").eq("round_id", roundId),
-      supabase.from("angler").select("*").eq("club_id", round.club_id),
+      supabase.from("angler").select("*").eq("competition_id", round.competition_id),
       supabase.from("pair").select("*").eq("competition_id", round.competition_id),
       supabase.from("lot").select("*").eq("competition_id", round.competition_id),
     ]);
@@ -219,7 +219,7 @@ export async function loadCompetitionStandings(
     roundIds.length
       ? supabase.from("round_entry").select("*").in("round_id", roundIds)
       : Promise.resolve({ data: [] as RoundEntry[] }),
-    supabase.from("angler").select("*").eq("club_id", competition.club_id),
+    supabase.from("angler").select("*").eq("competition_id", competitionId),
     supabase.from("pair").select("*").eq("competition_id", competitionId),
     supabase.from("lot").select("*").eq("competition_id", competitionId),
   ]);

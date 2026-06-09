@@ -2,8 +2,10 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createRound, createLot, createPair, transitionCompetition, setRoundGroup } from "../../actions";
+import { createRound, createLot, createAngler, transitionCompetition, setRoundGroup, deleteCompetition } from "../../actions";
 import { COMPETITION_STATUSES } from "@/domain/competition-status";
+import { phaseLabel } from "@/domain/phases";
+import { PairForm } from "@/components/PairForm";
 import type { Competition, Round, Lot, Pair, Angler } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
@@ -33,7 +35,7 @@ export default async function AdminCompetitionPage({
     supabase.from("round").select("*").eq("competition_id", id).order("date"),
     supabase.from("lot").select("*").eq("competition_id", id).order("number"),
     supabase.from("pair").select("*").eq("competition_id", id),
-    supabase.from("angler").select("*").order("name"),
+    supabase.from("angler").select("*").eq("competition_id", id).order("name"),
   ]);
 
   const roundList = (rounds ?? []) as Round[];
@@ -45,7 +47,7 @@ export default async function AdminCompetitionPage({
   return (
     <main className="container">
       <p className="muted">
-        <Link href="/admin">{t("back")}</Link>
+        <Link href={`/admin/club/${c.club_id}`}>{t("back")}</Link>
       </p>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <h1>{c.name}</h1>
@@ -76,20 +78,23 @@ export default async function AdminCompetitionPage({
 
       <section className="card">
         <h2>{t("rounds")}</h2>
-        <p className="muted">{t("groupsHelp")}</p>
+        <p className="muted">{t("phasesHelp")}</p>
         {roundList.length === 0 && <p className="muted">{t("noRounds")}</p>}
         {roundList.map((r) => (
           <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
             <span>
               <Link href={`/admin/round/${r.id}`}>{r.name}</Link>{" "}
               <span className="muted">· {r.date}</span>
+              {r.group_index !== null && (
+                <span className="muted"> · {t("phase")} {phaseLabel(r.group_index)}</span>
+              )}
             </span>
-            {/* Issue 18 — assign this round to a group (empty = ungrouped). */}
+            {/* Issue 18/31 — assign this round to a phase (empty = no phase). */}
             <form action={setRoundGroup} style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}>
               <input type="hidden" name="round_id" value={r.id} />
               <input type="hidden" name="competition_id" value={id} />
               <label className="muted" style={{ fontSize: "0.8rem" }}>
-                {t("group")}
+                {t("phase")}
                 <input
                   name="group_index"
                   type="number"
@@ -99,7 +104,7 @@ export default async function AdminCompetitionPage({
                 />
               </label>
               <button className="tab" type="submit">
-                {t("setGroup")}
+                {t("setPhase")}
               </button>
             </form>
           </div>
@@ -111,10 +116,33 @@ export default async function AdminCompetitionPage({
             <input name="date" type="date" required />
             <input name="start_time" type="time" />
             <input name="end_time" type="time" />
-            <input name="group_index" type="number" min={1} placeholder={t("group")} style={{ width: 90 }} />
+            <input name="group_index" type="number" min={1} placeholder={t("phase")} style={{ width: 90 }} />
           </div>
           <button className="primary" type="submit">
             {t("createRound")}
+          </button>
+        </form>
+      </section>
+
+      {/* Issue 30 — the angler roster lives inside the competition. */}
+      <section className="card">
+        <h2>{t("anglers")}</h2>
+        <div className="muted">{t("anglersCount", { count: anglerList.length })}</div>
+        {anglerList.map((a) => (
+          <div key={a.id}>
+            · {a.name} <span className="muted">· {a.license_number}</span>
+          </div>
+        ))}
+        <form action={createAngler} style={{ marginTop: "0.75rem", display: "grid", gap: "0.5rem" }}>
+          <input type="hidden" name="competition_id" value={id} />
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            <input name="name" placeholder={t("anglerName")} required />
+            <input name="license_number" placeholder={t("licenseNumber")} required />
+            <input name="federation_number" placeholder={t("federationNumber")} />
+            <input name="phone" type="tel" placeholder={t("phone")} />
+          </div>
+          <button className="primary" type="submit">
+            {t("addAngler")}
           </button>
         </form>
       </section>
@@ -167,33 +195,35 @@ export default async function AdminCompetitionPage({
               · {p.name ?? `${anglerName.get(p.angler1_id) ?? "?"} / ${anglerName.get(p.angler2_id) ?? "?"}`}
             </div>
           ))}
-          <form action={createPair} style={{ marginTop: "0.75rem", display: "grid", gap: "0.5rem" }}>
-            <input type="hidden" name="competition_id" value={id} />
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <select name="angler1_id" required>
-                <option value="">{t("angler1")}</option>
-                {anglerList.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-              <select name="angler2_id" required>
-                <option value="">{t("angler2")}</option>
-                {anglerList.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <input name="name" placeholder={t("pairNamePlaceholder")} />
-            <button className="primary" type="submit">
-              {t("createPair")}
-            </button>
-          </form>
+          <PairForm
+            competitionId={id}
+            anglers={anglerList.map((a) => ({ id: a.id, name: a.name }))}
+            labels={{
+              angler1: t("angler1"),
+              angler2: t("angler2"),
+              namePlaceholder: t("pairNamePlaceholder"),
+              create: t("createPair"),
+            }}
+          />
         </section>
       )}
+
+      {/* Issue 33 — delete the competition (destructive; explicit confirmation). */}
+      <section className="card">
+        <h2>{t("deleteCompetition")}</h2>
+        <form action={deleteCompetition} style={{ display: "grid", gap: "0.5rem" }}>
+          <input type="hidden" name="competition_id" value={id} />
+          <input type="hidden" name="locale" value={locale} />
+          <p className="muted" style={{ margin: 0 }}>{t("deleteCompetitionHelp")}</p>
+          <label className="muted" style={{ fontSize: "0.85rem" }}>
+            <input type="checkbox" name="confirm" required style={{ marginRight: 6 }} />
+            {t("confirmDeleteCompetition")}
+          </label>
+          <button className="tab" type="submit" style={{ color: "var(--danger, #c0392b)", width: "fit-content" }}>
+            {t("deleteCompetition")}
+          </button>
+        </form>
+      </section>
     </main>
   );
 }

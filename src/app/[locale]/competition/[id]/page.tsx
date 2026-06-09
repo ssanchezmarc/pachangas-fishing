@@ -4,6 +4,7 @@ import { Link } from "@/i18n/navigation";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { LiveStandings } from "@/components/LiveStandings";
 import { loadCompetitionStandings } from "@/lib/data";
+import { phaseLabel } from "@/domain/phases";
 
 export const dynamic = "force-dynamic";
 
@@ -45,15 +46,15 @@ export default async function CompetitionPage({
         initial={{ individual: data.individual, pairs: data.pairs }}
       />
 
-      {/* Issue 18 — per-group standings (the rounds grouped two-by-two). */}
+      {/* Issue 18/31 — per-phase standings (the rounds grouped into phases A, B…). */}
       {data.groups.length > 0 && (
         <>
-          <h2 style={{ marginTop: "2rem" }}>{t("competition.groupsHeading")}</h2>
+          <h2 style={{ marginTop: "2rem" }}>{t("competition.phasesHeading")}</h2>
           {data.groups.map((g) => (
             <div key={g.key} style={{ marginTop: "1rem" }}>
               <h3>
                 {g.groupIndex !== null
-                  ? t("competition.groupLabel", { index: g.groupIndex })
+                  ? t("competition.phaseLabel", { letter: phaseLabel(g.groupIndex) })
                   : g.roundNames[0]}{" "}
                 <span className="muted" style={{ fontWeight: 400, fontSize: "0.9rem" }}>
                   {g.roundNames.join(" + ")}

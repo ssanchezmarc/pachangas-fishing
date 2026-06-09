@@ -22,6 +22,14 @@ export interface Club {
   created_at: string;
 }
 
+/** Membership organizer↔club (issue 29): the organizer manages the clubs they belong to. */
+export interface ClubMember {
+  club_id: string;
+  user_id: string;
+  role: string;
+  created_at: string;
+}
+
 export interface Competition {
   id: string;
   club_id: string;
@@ -35,7 +43,6 @@ export interface Competition {
 
 export interface Round {
   id: string;
-  club_id: string;
   competition_id: string;
   name: string;
   date: string;
@@ -47,12 +54,15 @@ export interface Round {
    * the same non-null index form a group (typically two-by-two). `null` = ungrouped.
    */
   group_index: number | null;
+  /** Issue 10: this round receives inbound WhatsApp scorecard photos. */
+  whatsapp_active: boolean;
   created_at: string;
 }
 
+/** A competition's angler (issue 30): the roster lives inside each competition. */
 export interface Angler {
   id: string;
-  club_id: string;
+  competition_id: string;
   name: string;
   license_number: string;
   federation_number: string | null;
@@ -62,7 +72,6 @@ export interface Angler {
 
 export interface Pair {
   id: string;
-  club_id: string;
   competition_id: string;
   name: string | null;
   angler1_id: string;
@@ -71,7 +80,7 @@ export interface Pair {
 
 export interface Sector {
   id: string;
-  club_id: string;
+  competition_id: string;
   round_id: string;
   name: string;
 }
@@ -79,7 +88,6 @@ export interface Sector {
 /** A lot: the number drawn in the sorteo, scoped to a competition (issue 20). */
 export interface Lot {
   id: string;
-  club_id: string;
   competition_id: string;
   number: number;
   angler_id: string;
@@ -91,7 +99,7 @@ export interface Lot {
  */
 export interface RoundEntry {
   id: string;
-  club_id: string;
+  competition_id: string;
   round_id: string;
   lot_id: string;
   sector_id: string;
@@ -100,7 +108,7 @@ export interface RoundEntry {
 
 export interface Scorecard {
   id: string;
-  club_id: string;
+  competition_id: string;
   round_id: string;
   entry_id: string;
   status: ScorecardStatus;
@@ -115,7 +123,7 @@ export interface Scorecard {
 
 export interface CatchRow {
   id: string;
-  club_id: string;
+  competition_id: string;
   scorecard_id: string;
   size_cm: number;
   undersized: boolean;
@@ -124,7 +132,7 @@ export interface CatchRow {
 
 export interface ScorecardPhoto {
   id: string;
-  club_id: string;
+  competition_id: string;
   scorecard_id: string;
   storage_path: string;
   created_at: string;
@@ -135,7 +143,7 @@ export type ClaimStatus = "open" | "resolved" | "rejected";
 /** A claim against a scorecard (issue 25): scorecard_id is mandatory. */
 export interface Claim {
   id: string;
-  club_id: string;
+  competition_id: string;
   round_id: string;
   scorecard_id: string;
   author: string;

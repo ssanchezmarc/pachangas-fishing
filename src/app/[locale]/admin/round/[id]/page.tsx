@@ -10,8 +10,11 @@ import {
   addEntry,
   processScorecardReading,
   transitionRound,
+  updateRound,
+  deleteRound,
+  setRoundWhatsappActive,
 } from "../../actions";
-import { possibleTransitions } from "@/domain/round-status";
+import { possibleTransitions, allowsEditing } from "@/domain/round-status";
 import type { RoundEntry, Round, Angler, Scorecard, Sector, Lot, Claim } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
@@ -43,7 +46,7 @@ export default async function AdminRoundPage({
   ] = await Promise.all([
     supabase.from("sector").select("*").eq("round_id", id).order("name"),
     supabase.from("round_entry").select("*").eq("round_id", id),
-    supabase.from("angler").select("*").order("name"),
+    supabase.from("angler").select("*").eq("competition_id", r.competition_id).order("name"),
     supabase.from("scorecard").select("*").eq("round_id", id),
     supabase.from("claim").select("*").eq("round_id", id).order("created_at"),
     supabase.from("lot").select("*").eq("competition_id", r.competition_id).order("number"),
@@ -115,6 +118,73 @@ export default async function AdminRoundPage({
             </form>
           ))}
         </div>
+      </section>
+
+      {/* Issue 10 — mark this round as the one receiving inbound WhatsApp photos. */}
+      <section className="card">
+        <h2>{t("whatsappTitle")}</h2>
+        <p className="muted">{t("whatsappHelp")}</p>
+        <p>
+          <span className={`badge ${r.whatsapp_active ? "open" : ""}`}>
+            {r.whatsapp_active ? t("whatsappOn") : t("whatsappOff")}
+          </span>
+        </p>
+        <form action={setRoundWhatsappActive}>
+          <input type="hidden" name="round_id" value={id} />
+          <input type="hidden" name="competition_id" value={r.competition_id} />
+          <input type="hidden" name="active" value={r.whatsapp_active ? "false" : "true"} />
+          <button className={r.whatsapp_active ? "tab" : "primary"} type="submit">
+            {r.whatsapp_active ? t("whatsappDeactivate") : t("whatsappActivate")}
+          </button>
+        </form>
+      </section>
+
+      {/* Issue 32 — edit / delete the round. A final round is immutable (RF-11). */}
+      <section className="card">
+        <h2>{t("editRound")}</h2>
+        {!allowsEditing(r.status) ? (
+          <p className="muted">{t("finalLocked")}</p>
+        ) : (
+          <>
+            <form action={updateRound} style={{ display: "grid", gap: "0.5rem" }}>
+              <input type="hidden" name="round_id" value={id} />
+              <input type="hidden" name="competition_id" value={r.competition_id} />
+              <input name="name" defaultValue={r.name} placeholder={t("roundName")} required />
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                <input name="date" type="date" defaultValue={r.date} required />
+                <input name="start_time" type="time" defaultValue={r.start_time?.slice(0, 5) ?? ""} />
+                <input name="end_time" type="time" defaultValue={r.end_time?.slice(0, 5) ?? ""} />
+                <input
+                  name="group_index"
+                  type="number"
+                  min={1}
+                  defaultValue={r.group_index ?? ""}
+                  placeholder={t("phase")}
+                  style={{ width: 110 }}
+                />
+              </div>
+              <button className="primary" type="submit">
+                {t("saveRound")}
+              </button>
+            </form>
+            <form
+              action={deleteRound}
+              style={{ marginTop: "1rem", paddingTop: "0.75rem", borderTop: "1px solid var(--border)", display: "grid", gap: "0.5rem" }}
+            >
+              <input type="hidden" name="round_id" value={id} />
+              <input type="hidden" name="competition_id" value={r.competition_id} />
+              <input type="hidden" name="locale" value={locale} />
+              <p className="muted" style={{ margin: 0 }}>{t("deleteRoundHelp")}</p>
+              <label className="muted" style={{ fontSize: "0.85rem" }}>
+                <input type="checkbox" name="confirm" required style={{ marginRight: 6 }} />
+                {t("confirmDeleteRound")}
+              </label>
+              <button className="tab" type="submit" style={{ color: "var(--danger, #c0392b)", width: "fit-content" }}>
+                {t("deleteRound")}
+              </button>
+            </form>
+          </>
+        )}
       </section>
 
       {/* Slice 09 — HITL queue */}

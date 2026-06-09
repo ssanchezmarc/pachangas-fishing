@@ -1,39 +1,74 @@
 "use server";
 /**
  * Organizers' server actions. Every write goes through the authenticated client
- * (RLS requires a session). v1 is single-club: the first club is resolved.
+ * (RLS requires a session). Multi-club (issue 29): a competition hangs off a club
+ * the organizer belongs to; everything below the competition derives its
+ * `competition_id` from the parent via DB triggers, so actions never set a tenant
+ * id by hand. RLS (is_competition_mine / is_club_member) is the real guard.
  */
 import { revalidatePath } from "next/cache";
+import { redirect } from "@/i18n/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { scoreScorecard } from "@/domain/scoring";
 import type { ScoringConfig, Catch } from "@/domain/types";
 import { ALTO_CARRION_PRESET } from "@/domain/types";
-import { canTransition } from "@/domain/round-status";
+import { canTransition, allowsEditing } from "@/domain/round-status";
 import { canTransitionCompetition } from "@/domain/competition-status";
 import { isResolution } from "@/domain/claim";
 import { expandMeasures, parseMeasureLines } from "@/domain/manual-entry";
 import type { RoundStatus, CompetitionStatus } from "@/lib/supabase/types";
 import { resolveReader } from "@/lib/ai/reader";
 import { validateScorecard } from "@/domain/validation";
+import { isPublishTransition, pushStandingsSummary } from "@/lib/whatsapp/summary";
 
-async function clubId(): Promise<string> {
+async function currentUserId(): Promise<string> {
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.from("club").select("id").limit(1).single();
-  if (error || !data) throw new Error("No club configured.");
-  return data.id;
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated.");
+  return user.id;
 }
 
+/**
+ * Issue 29 — Creates a club and enrolls the current organizer as its owner
+ * (club_member). The membership is what every RLS policy checks afterwards.
+ */
+export async function createClub(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) throw new Error("Name required.");
+
+  const { data: club, error } = await supabase
+    .from("club")
+    .insert({ name })
+    .select("id")
+    .single();
+  if (error || !club) throw new Error(error?.message ?? "Could not create the club.");
+
+  const { error: eMember } = await supabase
+    .from("club_member")
+    .insert({ club_id: club.id, user_id: await currentUserId(), role: "owner" });
+  if (eMember) throw new Error(eMember.message);
+
+  revalidatePath("/admin");
+}
+
+/**
+ * Issue 29 — A competition is created inside the selected club (club_id from the
+ * URL). RLS requires the organizer to be a member of that club.
+ */
 export async function createCompetition(formData: FormData) {
   const supabase = await createSupabaseServerClient();
+  const club_id = String(formData.get("club_id") ?? "");
   const name = String(formData.get("name") ?? "").trim();
   // Issue 16: a competition is individual or pairs. Defaults to pairs (Liga Duos).
   const type = String(formData.get("type") ?? "pairs") === "individual" ? "individual" : "pairs";
+  if (!club_id) throw new Error("Club required.");
   if (!name) throw new Error("Name required.");
-  const { error } = await supabase
-    .from("competition")
-    .insert({ club_id: await clubId(), name, type });
+  const { error } = await supabase.from("competition").insert({ club_id, name, type });
   if (error) throw new Error(error.message);
-  revalidatePath("/admin");
+  revalidatePath(`/admin/club/${club_id}`);
 }
 
 export async function createRound(formData: FormData) {
@@ -52,7 +87,7 @@ export async function createRound(formData: FormData) {
   }
   const { error } = await supabase
     .from("round")
-    .insert({ club_id: await clubId(), competition_id, name, date, start_time, end_time, group_index });
+    .insert({ competition_id, name, date, start_time, end_time, group_index });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
@@ -77,30 +112,154 @@ export async function setRoundGroup(formData: FormData) {
   revalidatePath(`/admin/round/${round_id}`);
 }
 
+/**
+ * Issue 10 — Marks (or clears) the round that receives inbound WhatsApp photos.
+ * Only one round per competition can be active, so activating one deactivates its
+ * siblings. The ingestion queue attaches inbound plicas to the active round.
+ */
+export async function setRoundWhatsappActive(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const round_id = String(formData.get("round_id") ?? "");
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const active = String(formData.get("active") ?? "") === "true";
+  if (!round_id || !competition_id) throw new Error("Round and competition required.");
+
+  if (active) {
+    await supabase
+      .from("round")
+      .update({ whatsapp_active: false })
+      .eq("competition_id", competition_id);
+  }
+  const { error } = await supabase
+    .from("round")
+    .update({ whatsapp_active: active })
+    .eq("id", round_id);
+  if (error) throw new Error(error.message);
+
+  await recordAudit({
+    round_id,
+    entity: "round",
+    entity_id: round_id,
+    action: "whatsapp_active",
+    details: { active },
+  });
+  revalidatePath(`/admin/round/${round_id}`);
+  revalidatePath(`/admin/competition/${competition_id}`);
+}
+
+/**
+ * Issue 32 — Edits a round (name, date, hours, phase). Respects immutability: a
+ * final round (RF-11, issue 12) cannot be edited. The change is audited and the
+ * affected standings are recomputed on read, so revalidating the paths suffices.
+ */
+export async function updateRound(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const round_id = String(formData.get("round_id") ?? "");
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  const date = String(formData.get("date") ?? "");
+  const start_time = String(formData.get("start_time") ?? "") || null;
+  const end_time = String(formData.get("end_time") ?? "") || null;
+  const groupRaw = String(formData.get("group_index") ?? "").trim();
+  const group_index = groupRaw ? Number(groupRaw) : null;
+  if (!round_id || !name || !date) throw new Error("Round, name and date required.");
+  if (group_index !== null && (!Number.isInteger(group_index) || group_index <= 0)) {
+    throw new Error("The phase must be a positive integer.");
+  }
+
+  const { data: round } = await supabase.from("round").select("status").eq("id", round_id).single();
+  if (!round) throw new Error("Round not found.");
+  if (!allowsEditing(round.status as RoundStatus)) throw new Error("The round is final (immutable).");
+
+  const { error } = await supabase
+    .from("round")
+    .update({ name, date, start_time, end_time, group_index })
+    .eq("id", round_id);
+  if (error) throw new Error(error.message);
+
+  await recordAudit({
+    round_id,
+    entity: "round",
+    entity_id: round_id,
+    action: "round_edit",
+    details: { name, date, start_time, end_time, group_index },
+  });
+  if (competition_id) revalidatePath(`/admin/competition/${competition_id}`);
+  revalidatePath(`/admin/round/${round_id}`);
+  revalidatePath(`/round/${round_id}`);
+}
+
+/**
+ * Issue 32 — Deletes a round after explicit confirmation. A final round is immutable
+ * (RF-11) and cannot be deleted. The delete cascades to its sectors, entries,
+ * scorecards, catches and photos via the schema FKs (on delete cascade); the audit
+ * entry is written before the delete (its round_id is set null on cascade but the
+ * row survives, RNF-4).
+ */
+export async function deleteRound(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const round_id = String(formData.get("round_id") ?? "");
+  const competition_id = String(formData.get("competition_id") ?? "");
+  if (!round_id) throw new Error("Round required.");
+  if (String(formData.get("confirm") ?? "") !== "on") throw new Error("Deletion must be confirmed.");
+
+  const { data: round } = await supabase
+    .from("round")
+    .select("status, name")
+    .eq("id", round_id)
+    .single();
+  if (!round) throw new Error("Round not found.");
+  if (!allowsEditing(round.status as RoundStatus)) throw new Error("The round is final (immutable).");
+
+  await recordAudit({
+    round_id,
+    entity: "round",
+    entity_id: round_id,
+    action: "round_delete",
+    details: { name: round.name },
+  });
+
+  const { error } = await supabase.from("round").delete().eq("id", round_id);
+  if (error) throw new Error(error.message);
+
+  if (competition_id) {
+    revalidatePath(`/admin/competition/${competition_id}`);
+    revalidatePath(`/competition/${competition_id}`);
+  }
+  revalidatePath("/admin");
+  const locale = String(formData.get("locale") ?? "es");
+  if (competition_id) redirect({ href: `/admin/competition/${competition_id}`, locale });
+}
+
 export async function createSector(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
   const name = String(formData.get("name") ?? "").trim();
   if (!round_id || !name) throw new Error("Round and name required.");
-  const { error } = await supabase.from("sector").insert({ club_id: await clubId(), round_id, name });
+  const { error } = await supabase.from("sector").insert({ round_id, name });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/round/${round_id}`);
 }
 
+/**
+ * Issue 30 — Registers an angler inside a competition (the roster is per
+ * competition, not per club). Issue 19: name + license mandatory.
+ */
 export async function createAngler(formData: FormData) {
   const supabase = await createSupabaseServerClient();
-  // Issue 19: name + license are mandatory; federation number and phone optional.
+  const competition_id = String(formData.get("competition_id") ?? "");
   const name = String(formData.get("name") ?? "").trim();
   const license_number = String(formData.get("license_number") ?? "").trim();
   const federation_number = String(formData.get("federation_number") ?? "").trim() || null;
   const phone = String(formData.get("phone") ?? "").trim() || null;
+  if (!competition_id) throw new Error("Competition required.");
   if (!name) throw new Error("Name required.");
   if (!license_number) throw new Error("License number required.");
   const { error } = await supabase
     .from("angler")
-    .insert({ club_id: await clubId(), name, license_number, federation_number, phone });
+    .insert({ competition_id, name, license_number, federation_number, phone });
   if (error) throw new Error(error.message);
-  revalidatePath("/admin");
+  revalidatePath(`/admin/competition/${competition_id}`);
 }
 
 /**
@@ -116,7 +275,7 @@ export async function createLot(formData: FormData) {
   if (!Number.isInteger(number) || number <= 0) throw new Error("A positive lot number is required.");
   const { error } = await supabase
     .from("lot")
-    .insert({ club_id: await clubId(), competition_id, angler_id, number });
+    .insert({ competition_id, angler_id, number });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
@@ -133,7 +292,6 @@ export async function addEntry(formData: FormData) {
   const controls_lot_id = String(formData.get("controls_lot_id") ?? "") || null;
   if (!round_id || !lot_id || !sector_id) throw new Error("Round, lot and sector required.");
   const { error } = await supabase.from("round_entry").insert({
-    club_id: await clubId(),
     round_id,
     lot_id,
     sector_id,
@@ -154,7 +312,7 @@ export async function createPair(formData: FormData) {
   if (angler1_id === angler2_id) throw new Error("A pair is two distinct anglers.");
   const { error } = await supabase
     .from("pair")
-    .insert({ club_id: await clubId(), competition_id, angler1_id, angler2_id, name });
+    .insert({ competition_id, angler1_id, angler2_id, name });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
@@ -188,12 +346,10 @@ export async function createScorecard(formData: FormData) {
 
   const config: ScoringConfig = await roundScoringConfig(round_id);
   const r = scoreScorecard(catches, config);
-  const cid = await clubId();
 
   const { data: scorecard, error } = await supabase
     .from("scorecard")
     .insert({
-      club_id: cid,
       round_id,
       entry_id,
       status: "confirmed",
@@ -208,7 +364,6 @@ export async function createScorecard(formData: FormData) {
 
   if (catches.length > 0) {
     const rows = catches.map((c, i) => ({
-      club_id: cid,
       scorecard_id: scorecard.id,
       size_cm: c.sizeCm,
       undersized: c.sizeCm < config.minSizeCm,
@@ -231,7 +386,7 @@ export async function createScorecard(formData: FormData) {
     if (eUp) throw new Error(`Photo: ${eUp.message}`);
     const { error: ePhoto } = await supabase
       .from("scorecard_photo")
-      .insert({ club_id: cid, scorecard_id: scorecard.id, storage_path: path });
+      .insert({ scorecard_id: scorecard.id, storage_path: path });
     if (ePhoto) throw new Error(ePhoto.message);
   }
 
@@ -266,7 +421,6 @@ export async function createScorecardManual(formData: FormData) {
   const config = await roundScoringConfig(round_id);
   const catches = expandMeasures(parseMeasureLines(measuresRaw), Math.trunc(undersized), config);
   const r = scoreScorecard(catches, config);
-  const cid = await clubId();
 
   // Find-or-create the roster entry for this lot in this round.
   const { data: existing } = await supabase
@@ -280,7 +434,7 @@ export async function createScorecardManual(formData: FormData) {
   if (!entry_id) {
     const { data: created, error: eEntry } = await supabase
       .from("round_entry")
-      .insert({ club_id: cid, round_id, lot_id, sector_id, controls_lot_id })
+      .insert({ round_id, lot_id, sector_id, controls_lot_id })
       .select("id")
       .single();
     if (eEntry || !created) throw new Error(eEntry?.message ?? "Could not create the entry.");
@@ -290,7 +444,6 @@ export async function createScorecardManual(formData: FormData) {
   const { data: scorecard, error } = await supabase
     .from("scorecard")
     .insert({
-      club_id: cid,
       round_id,
       entry_id,
       status: "confirmed",
@@ -306,7 +459,6 @@ export async function createScorecardManual(formData: FormData) {
   if (catches.length > 0) {
     const { error: eCatches } = await supabase.from("catch").insert(
       catches.map((c, i) => ({
-        club_id: cid,
         scorecard_id: scorecard.id,
         size_cm: c.sizeCm,
         undersized: c.sizeCm < config.minSizeCm,
@@ -316,19 +468,14 @@ export async function createScorecardManual(formData: FormData) {
     if (eCatches) throw new Error(eCatches.message);
   }
 
-  await uploadScorecardPhoto(formData, round_id, scorecard.id, cid);
+  await uploadScorecardPhoto(formData, round_id, scorecard.id);
 
   revalidatePath(`/admin/round/${round_id}`);
   revalidatePath(`/round/${round_id}`);
 }
 
 /** Shared optional evidence-photo upload (private storage + scorecard_photo row). */
-async function uploadScorecardPhoto(
-  formData: FormData,
-  round_id: string,
-  scorecard_id: string,
-  cid: string,
-) {
+async function uploadScorecardPhoto(formData: FormData, round_id: string, scorecard_id: string) {
   const photo = formData.get("photo");
   if (!(photo instanceof File) || photo.size === 0) return;
   const supabase = await createSupabaseServerClient();
@@ -342,7 +489,7 @@ async function uploadScorecardPhoto(
   if (eUp) throw new Error(`Photo: ${eUp.message}`);
   const { error: ePhoto } = await supabase
     .from("scorecard_photo")
-    .insert({ club_id: cid, scorecard_id, storage_path: path });
+    .insert({ scorecard_id, storage_path: path });
   if (ePhoto) throw new Error(ePhoto.message);
 }
 
@@ -369,6 +516,7 @@ async function currentAuthor(): Promise<string> {
 }
 
 async function recordAudit(entry: {
+  competition_id?: string | null;
   round_id: string | null;
   entity: string;
   entity_id: string | null;
@@ -376,8 +524,18 @@ async function recordAudit(entry: {
   details?: Record<string, unknown>;
 }) {
   const supabase = await createSupabaseServerClient();
+  // Tenancy column: derive the competition from the round when not given explicitly.
+  let competition_id = entry.competition_id ?? null;
+  if (!competition_id && entry.round_id) {
+    const { data } = await supabase
+      .from("round")
+      .select("competition_id")
+      .eq("id", entry.round_id)
+      .single();
+    competition_id = (data?.competition_id as string | undefined) ?? null;
+  }
   await supabase.from("audit_log").insert({
-    club_id: await clubId(),
+    competition_id,
     round_id: entry.round_id,
     entity: entry.entity,
     entity_id: entry.entity_id,
@@ -394,7 +552,11 @@ export async function transitionRound(formData: FormData) {
   const to = String(formData.get("to") ?? "") as RoundStatus;
   if (!round_id || !to) throw new Error("Round and target required.");
 
-  const { data: round } = await supabase.from("round").select("status").eq("id", round_id).single();
+  const { data: round } = await supabase
+    .from("round")
+    .select("status, name")
+    .eq("id", round_id)
+    .single();
   if (!round) throw new Error("Round not found.");
   if (!canTransition(round.status as RoundStatus, to)) {
     throw new Error(`Transition not allowed: ${round.status} → ${to}.`);
@@ -410,6 +572,15 @@ export async function transitionRound(formData: FormData) {
     action: "status_transition",
     details: { from: round.status, to },
   });
+
+  // Issue 13 — push a summary + live link to the group when standings are published
+  // (provisional and final). The push must never break the transition itself.
+  if (isPublishTransition(to)) {
+    await pushStandingsSummary(round_id, round.name as string, to).catch((e) =>
+      console.error("WhatsApp summary push failed:", e),
+    );
+  }
+
   revalidatePath(`/admin/round/${round_id}`);
   revalidatePath(`/round/${round_id}`);
 }
@@ -441,6 +612,7 @@ export async function transitionCompetition(formData: FormData) {
   if (error) throw new Error(error.message);
 
   await recordAudit({
+    competition_id,
     round_id: null,
     entity: "competition",
     entity_id: competition_id,
@@ -450,6 +622,43 @@ export async function transitionCompetition(formData: FormData) {
   revalidatePath("/admin");
   revalidatePath(`/admin/competition/${competition_id}`);
   revalidatePath("/");
+}
+
+/**
+ * Issue 33 — Deletes a competition after explicit confirmation (destructive). The
+ * delete cascades through the schema FKs (on delete cascade) to its rounds, sectors,
+ * entries, lots, pairs, scorecards, catches, photos and claims. The audit entry is
+ * written before the delete; afterwards the organizer is sent back to /admin.
+ */
+export async function deleteCompetition(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  if (!competition_id) throw new Error("Competition required.");
+  if (String(formData.get("confirm") ?? "") !== "on") throw new Error("Deletion must be confirmed.");
+
+  const { data: competition } = await supabase
+    .from("competition")
+    .select("name")
+    .eq("id", competition_id)
+    .single();
+  if (!competition) throw new Error("Competition not found.");
+
+  await recordAudit({
+    competition_id,
+    round_id: null,
+    entity: "competition",
+    entity_id: competition_id,
+    action: "competition_delete",
+    details: { name: competition.name },
+  });
+
+  const { error } = await supabase.from("competition").delete().eq("id", competition_id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/admin");
+  revalidatePath("/");
+  const locale = String(formData.get("locale") ?? "es");
+  redirect({ href: "/admin", locale });
 }
 
 /**
@@ -473,7 +682,7 @@ export async function registerScorecardClaim(formData: FormData) {
 
   const { data: claim, error } = await supabase
     .from("claim")
-    .insert({ club_id: await clubId(), round_id, scorecard_id, author, reason })
+    .insert({ round_id, scorecard_id, author, reason })
     .select("id")
     .single();
   if (error || !claim) throw new Error(error?.message ?? "Could not register.");
@@ -552,12 +761,10 @@ export async function processScorecardReading(formData: FormData) {
 
   const catches: Catch[] = reading.catches.map((c) => ({ sizeCm: c.handwrittenSize }));
   const r = scoreScorecard(catches, config);
-  const cid = await clubId();
 
   const { data: scorecard, error } = await supabase
     .from("scorecard")
     .insert({
-      club_id: cid,
       round_id,
       entry_id,
       status: result.status, // 'auto' | 'flagged'
@@ -574,7 +781,6 @@ export async function processScorecardReading(formData: FormData) {
   if (catches.length > 0) {
     await supabase.from("catch").insert(
       catches.map((c, i) => ({
-        club_id: cid,
         scorecard_id: scorecard.id,
         size_cm: c.sizeCm,
         undersized: c.sizeCm < config.minSizeCm,
@@ -645,13 +851,10 @@ export async function correctScorecard(formData: FormData) {
   const previousSizes = (previous ?? []).map((c: { size_cm: number }) => Number(c.size_cm));
 
   const r = scoreScorecard(newCatches, config);
-  const cid = await clubId();
-
   await supabase.from("catch").delete().eq("scorecard_id", scorecard_id);
   if (newCatches.length > 0) {
     await supabase.from("catch").insert(
       newCatches.map((c, i) => ({
-        club_id: cid,
         scorecard_id,
         size_cm: c.sizeCm,
         undersized: c.sizeCm < config.minSizeCm,
@@ -726,13 +929,10 @@ export async function editScorecard(formData: FormData) {
   const previousSizes = (previous ?? []).map((c: { size_cm: number }) => Number(c.size_cm));
 
   const r = scoreScorecard(newCatches, config);
-  const cid = await clubId();
-
   await supabase.from("catch").delete().eq("scorecard_id", scorecard_id);
   if (newCatches.length > 0) {
     await supabase.from("catch").insert(
       newCatches.map((c, i) => ({
-        club_id: cid,
         scorecard_id,
         size_cm: c.sizeCm,
         undersized: c.sizeCm < config.minSizeCm,
