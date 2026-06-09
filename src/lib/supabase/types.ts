@@ -1,0 +1,148 @@
+/**
+ * Database types (minimal, hand-written for the Phase 0 model). In a project with
+ * provisioned Supabase these would be generated with
+ * `supabase gen types typescript`. Here they cover migrations 0001-0003.
+ */
+import type { AggregationConfig, CompetitionType, ScoringConfig } from "@/domain/types";
+import type { ValidationIssue } from "@/domain/validation";
+
+export type RoundStatus = "open" | "provisional" | "appeals" | "final";
+export type ScorecardStatus = "draft" | "auto" | "flagged" | "confirmed";
+export type CompetitionStatus =
+  | "draft"
+  | "open"
+  | "in_progress"
+  | "provisional"
+  | "final"
+  | "closed";
+
+export interface Club {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface Competition {
+  id: string;
+  club_id: string;
+  name: string;
+  type: CompetitionType;
+  status: CompetitionStatus;
+  scoring_config: ScoringConfig;
+  aggregation_config: AggregationConfig;
+  created_at: string;
+}
+
+export interface Round {
+  id: string;
+  club_id: string;
+  competition_id: string;
+  name: string;
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  status: RoundStatus;
+  /**
+   * Group index for the standings (issue 18): rounds of the same competition with
+   * the same non-null index form a group (typically two-by-two). `null` = ungrouped.
+   */
+  group_index: number | null;
+  created_at: string;
+}
+
+export interface Angler {
+  id: string;
+  club_id: string;
+  name: string;
+  license_number: string;
+  federation_number: string | null;
+  phone: string | null;
+  created_at: string;
+}
+
+export interface Pair {
+  id: string;
+  club_id: string;
+  competition_id: string;
+  name: string | null;
+  angler1_id: string;
+  angler2_id: string;
+}
+
+export interface Sector {
+  id: string;
+  club_id: string;
+  round_id: string;
+  name: string;
+}
+
+/** A lot: the number drawn in the sorteo, scoped to a competition (issue 20). */
+export interface Lot {
+  id: string;
+  club_id: string;
+  competition_id: string;
+  number: number;
+  angler_id: string;
+}
+
+/**
+ * A lot's participation in a round (issue 20): the sector it fishes and the lot it
+ * controls. Derived from the lot — there is no loose bib anymore.
+ */
+export interface RoundEntry {
+  id: string;
+  club_id: string;
+  round_id: string;
+  lot_id: string;
+  sector_id: string;
+  controls_lot_id: string | null;
+}
+
+export interface Scorecard {
+  id: string;
+  club_id: string;
+  round_id: string;
+  entry_id: string;
+  status: ScorecardStatus;
+  total_legal_catches: number | null;
+  total_undersized: number | null;
+  biggest_catch_cm: number | null;
+  catch_points: number;
+  issues: ValidationIssue[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CatchRow {
+  id: string;
+  club_id: string;
+  scorecard_id: string;
+  size_cm: number;
+  undersized: boolean;
+  seq: number;
+}
+
+export interface ScorecardPhoto {
+  id: string;
+  club_id: string;
+  scorecard_id: string;
+  storage_path: string;
+  created_at: string;
+}
+
+export type ClaimStatus = "open" | "resolved" | "rejected";
+
+/** A claim against a scorecard (issue 25): scorecard_id is mandatory. */
+export interface Claim {
+  id: string;
+  club_id: string;
+  round_id: string;
+  scorecard_id: string;
+  author: string;
+  reason: string;
+  status: ClaimStatus;
+  resolution: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}

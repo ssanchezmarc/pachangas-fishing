@@ -1,0 +1,10 @@
+{
+  "name": "Pachangas Fishing — Standings",
+  "short_name": "Pachangas",
+  "description": "Live standings of fishing competitions",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1f2a",
+  "theme_color": "#0b1f2a",
+  "icons": []
+}

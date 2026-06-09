@@ -1,0 +1,19 @@
+# Minimal Supabase project config for `supabase start` (local) and CI.
+# The real (cloud) project is provisioned manually — see ONBOARDING / todo-list.
+project_id = "pachangas-fishing"
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+port = 54323
+
+[auth]
+enabled = true
+# Only the committee has a login (Supabase Auth). Participants and controllers do not.
+site_url = "http://localhost:3000"
+
+[storage]
+enabled = true
+# Private bucket for scorecard photos (evidence). Created by the storage migration.

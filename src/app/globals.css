@@ -1,0 +1,220 @@
+:root {
+  --bg: #0b1f2a;
+  --panel: #112c3a;
+  --accent: #2bb3a3;
+  --text: #e8f1f2;
+  --muted: #93a8b3;
+  --border: #1d3d4d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.tab {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.tab[aria-selected="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #03201c;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.badge.open {
+  background: #25506340;
+  color: #7fd0e0;
+}
+.badge.provisional {
+  background: #6b521e60;
+  color: #f0d28a;
+}
+.badge.final {
+  background: #1f5b3a60;
+  color: #8ce0ac;
+}
+.badge.draft {
+  background: #3a3a3a60;
+  color: #c8c8c8;
+}
+.badge.in_progress {
+  background: #2b4e6360;
+  color: #8fd0e0;
+}
+.badge.closed {
+  background: #5a2a2a60;
+  color: #e0a0a0;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+button.primary {
+  background: var(--accent);
+  color: #03201c;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lang-switcher select {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+/* Issue 27 — podium: 1st largest, 2nd/3rd a bit smaller, the rest in the table. */
+.podium {
+  list-style: none;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.75rem;
+}
+.podium-place {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  text-align: center;
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+.podium-place.place-1 {
+  flex-basis: 200px;
+  border-color: #d4af37;
+  box-shadow: 0 0 0 1px #d4af3755 inset;
+  order: 2;
+}
+.podium-place.place-2 {
+  order: 1;
+}
+.podium-place.place-3 {
+  order: 3;
+}
+.podium-medal {
+  font-size: 2rem;
+}
+.podium-place.place-1 .podium-medal {
+  font-size: 3rem;
+}
+.podium-name {
+  font-weight: 700;
+  font-size: 1rem;
+  margin-top: 0.25rem;
+}
+.podium-place.place-1 .podium-name {
+  font-size: 1.3rem;
+}
+.podium-detail,
+.podium-stats {
+  font-size: 0.8rem;
+}
+@media (max-width: 520px) {
+  .podium {
+    flex-direction: column;
+  }
+  .podium-place,
+  .podium-place.place-1,
+  .podium-place.place-2,
+  .podium-place.place-3 {
+    order: 0;
+    flex-basis: auto;
+  }
+}
