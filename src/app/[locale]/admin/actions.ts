@@ -263,8 +263,9 @@ export async function createAngler(formData: FormData) {
 }
 
 /**
- * Issue 20: registers a lot — the number drawn in the sorteo, scoped to a
- * competition, assigned to an angler. Replaces the loose bib.
+ * Issue 20/35: registers a lot — the number drawn in the sorteo, scoped to a
+ * competition, assigned to an angler. The lot number is no longer unique on its own
+ * (a pair shares it, issue 35); one lot per angler still holds.
  */
 export async function createLot(formData: FormData) {
   const supabase = await createSupabaseServerClient();
@@ -273,29 +274,62 @@ export async function createLot(formData: FormData) {
   const number = Number(String(formData.get("number") ?? "").trim());
   if (!competition_id || !angler_id) throw new Error("Competition and angler required.");
   if (!Number.isInteger(number) || number <= 0) throw new Error("A positive lot number is required.");
-  const { error } = await supabase
-    .from("lot")
-    .insert({ competition_id, angler_id, number });
+  const { error } = await supabase.from("lot").insert({ competition_id, angler_id, number });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
 
 /**
- * Roster: the lot's participation in a round (which sector it fishes, which lot it
- * controls). Derived from the lot — no loose bib (issue 20).
+ * Issue 35 — Assigns ONE lot number to a pair: under the hood it creates a lot per
+ * member (same number, one per angler), so each member keeps their own scorecard
+ * while the shared number links them.
+ */
+export async function assignPairLot(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const pair_id = String(formData.get("pair_id") ?? "");
+  const number = Number(String(formData.get("number") ?? "").trim());
+  if (!competition_id || !pair_id) throw new Error("Competition and pair required.");
+  if (!Number.isInteger(number) || number <= 0) throw new Error("A positive lot number is required.");
+
+  const { data: pair } = await supabase
+    .from("pair")
+    .select("angler1_id, angler2_id")
+    .eq("id", pair_id)
+    .single();
+  if (!pair) throw new Error("Pair not found.");
+
+  const { error } = await supabase.from("lot").insert([
+    { competition_id, angler_id: pair.angler1_id, number },
+    { competition_id, angler_id: pair.angler2_id, number },
+  ]);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/competition/${competition_id}`);
+}
+
+/**
+ * Roster: the lot's role in a round (issue 35). A `fish` entry fishes a sector; a
+ * `control` entry controls another lot (no sector). The fish/control inversion of a
+ * phase (issue 18/31) is just different roles per round.
  */
 export async function addEntry(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
   const lot_id = String(formData.get("lot_id") ?? "");
-  const sector_id = String(formData.get("sector_id") ?? "");
+  const role = String(formData.get("role") ?? "fish") === "control" ? "control" : "fish";
+  const sector_id = String(formData.get("sector_id") ?? "") || null;
   const controls_lot_id = String(formData.get("controls_lot_id") ?? "") || null;
-  if (!round_id || !lot_id || !sector_id) throw new Error("Round, lot and sector required.");
+  if (!round_id || !lot_id) throw new Error("Round and lot required.");
+  if (role === "fish" && !sector_id) throw new Error("A fishing entry needs a sector.");
+  if (role === "control" && !controls_lot_id) {
+    throw new Error("A control entry needs the controlled lot.");
+  }
   const { error } = await supabase.from("round_entry").insert({
     round_id,
     lot_id,
-    sector_id,
-    controls_lot_id,
+    role,
+    sector_id: role === "fish" ? sector_id : null,
+    controls_lot_id: role === "control" ? controls_lot_id : null,
   });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/round/${round_id}`);
@@ -434,7 +468,7 @@ export async function createScorecardManual(formData: FormData) {
   if (!entry_id) {
     const { data: created, error: eEntry } = await supabase
       .from("round_entry")
-      .insert({ round_id, lot_id, sector_id, controls_lot_id })
+      .insert({ round_id, lot_id, role: "fish", sector_id, controls_lot_id })
       .select("id")
       .single();
     if (eEntry || !created) throw new Error(eEntry?.message ?? "Could not create the entry.");

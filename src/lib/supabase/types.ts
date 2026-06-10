@@ -97,12 +97,17 @@ export interface Lot {
  * A lot's participation in a round (issue 20): the sector it fishes and the lot it
  * controls. Derived from the lot — there is no loose bib anymore.
  */
+/** A lot's per-round role: it fishes a sector or controls another lot (issue 35). */
+export type RoundRole = "fish" | "control";
+
 export interface RoundEntry {
   id: string;
   competition_id: string;
   round_id: string;
   lot_id: string;
-  sector_id: string;
+  role: RoundRole;
+  /** Sector fished — set on `fish` rows, null on `control` rows. */
+  sector_id: string | null;
   controls_lot_id: string | null;
 }
 

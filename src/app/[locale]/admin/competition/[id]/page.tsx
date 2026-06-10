@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createRound, createLot, createAngler, transitionCompetition, setRoundGroup, deleteCompetition } from "../../actions";
+import { createRound, createLot, assignPairLot, createAngler, transitionCompetition, setRoundGroup, deleteCompetition } from "../../actions";
 import { COMPETITION_STATUSES } from "@/domain/competition-status";
 import { phaseLabel } from "@/domain/phases";
 import { PairForm } from "@/components/PairForm";
@@ -183,6 +183,36 @@ export default async function AdminCompetitionPage({
             {t("createLot")}
           </button>
         </form>
+        {/* Issue 35 — in a pairs competition, assign one lot number to the pair; it
+            creates a lot per member (same number) under the hood. */}
+        {c.type === "pairs" && (
+          <form
+            action={assignPairLot}
+            style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}
+          >
+            <input type="hidden" name="competition_id" value={id} />
+            <input
+              name="number"
+              type="number"
+              min={1}
+              placeholder={t("lotNumber")}
+              required
+              style={{ width: 100 }}
+            />
+            <select name="pair_id" required>
+              <option value="">{t("lotPair")}</option>
+              {pairList.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name ??
+                    `${anglerName.get(p.angler1_id) ?? "?"} / ${anglerName.get(p.angler2_id) ?? "?"}`}
+                </option>
+              ))}
+            </select>
+            <button className="primary" type="submit">
+              {t("assignPairLot")}
+            </button>
+          </form>
+        )}
       </section>
 
       {/* Pairs management only for pairs competitions (issue 16/17). */}

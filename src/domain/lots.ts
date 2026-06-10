@@ -1,20 +1,30 @@
 /**
- * Issue 20 — Lots (the sorteo draw) → per-round participations.
+ * Issues 20 + 35 — Lots and their per-round participations.
  *
- * A lot is drawn at competition level and determines, round by round, which sector
- * its angler fishes and which lot they control. This module expands a lot's
- * round map into the flat per-round participations the standings engine consumes,
- * supporting the fish/control role inversion of grouped rounds (issue 18): the
- * controlled lot simply differs per round.
+ * A lot has a number and is assigned to an angler (in a pairs competition both
+ * members of a pair draw a lot with the SAME number — issue 35). The lot defines,
+ * per round of the competition, its **role**: it either **fishes** a sector or
+ * **controls** another lot. That per-round role is what supports the fish/control
+ * inversion between the rounds of a phase (issues 18/31): a lot fishes round 1 and
+ * controls round 2, its paired lot does the inverse.
  *
- * Pure and I/O-free.
+ * lot ↔ sector (issue 35 decision, 2026-06-09): sectors are defined first, then
+ * assigned to a lot's fishing role per round. So a `fish` map carries its sector; a
+ * `control` map carries the controlled lot.
+ *
+ * Pure and I/O-free. The standings engine consumes only the `fish` participations
+ * (a controller does not score in the round they control).
  */
 
-/** What a lot does in a single round: fish a sector, control another lot. */
+export type LotRole = "fish" | "control";
+
+/** What a lot does in a single round: fish a sector, or control another lot. */
 export interface LotRoundMap {
   roundId: string;
-  sectorId: string;
-  /** The lot this lot controls in that round (undefined if it controls nobody). */
+  role: LotRole;
+  /** Sector fished — required when role is "fish". */
+  sectorId?: string;
+  /** The lot this lot controls — required when role is "control". */
   controlsLotId?: string;
 }
 
@@ -32,7 +42,8 @@ export interface LotParticipation {
   number: number;
   anglerId: string;
   roundId: string;
-  sectorId: string;
+  role: LotRole;
+  sectorId?: string;
   controlsLotId?: string;
 }
 
@@ -44,6 +55,7 @@ export function lotParticipations(lots: LotAssignment[]): LotParticipation[] {
       number: lot.number,
       anglerId: lot.anglerId,
       roundId: r.roundId,
+      role: r.role,
       sectorId: r.sectorId,
       controlsLotId: r.controlsLotId,
     })),
@@ -56,4 +68,29 @@ export function participationsByRound(
   roundId: string,
 ): LotParticipation[] {
   return participations.filter((p) => p.roundId === roundId);
+}
+
+/** Round ids where the lot fishes. */
+export function fishRounds(lot: LotAssignment): string[] {
+  return lot.rounds.filter((r) => r.role === "fish").map((r) => r.roundId);
+}
+
+/** Round ids where the lot controls another lot. */
+export function controlRounds(lot: LotAssignment): string[] {
+  return lot.rounds.filter((r) => r.role === "control").map((r) => r.roundId);
+}
+
+/**
+ * Issue 35 — Groups lots that share a number into a single assignment unit. In a
+ * pairs competition the two members of a pair draw lots with the same number, so a
+ * number maps to (usually) two lots. Order of first appearance is preserved.
+ */
+export function lotsByNumber(lots: LotAssignment[]): Map<number, LotAssignment[]> {
+  const byNumber = new Map<number, LotAssignment[]>();
+  for (const lot of lots) {
+    const list = byNumber.get(lot.number);
+    if (list) list.push(lot);
+    else byNumber.set(lot.number, [lot]);
+  }
+  return byNumber;
 }

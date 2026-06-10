@@ -135,7 +135,7 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
   const scorecardsToRank: ScorecardToRank[] = (scorecards ?? [])
     .map((sc: { entry_id: string; catch: { size_cm: number }[] }) => {
       const entry = entryById.get(sc.entry_id);
-      if (!entry) return null;
+      if (!entry || !entry.sector_id) return null; // only fishing entries score (issue 35).
       const anglerId = anglerByEntry(entry);
       if (!anglerId) return null;
       const catches: Catch[] = (sc.catch ?? []).map((c) => ({ sizeCm: Number(c.size_cm) }));
@@ -159,7 +159,9 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
   const sectorByAngler = new Map<string, string>();
   for (const entry of entries ?? []) {
     const anglerId = anglerByEntry(entry);
-    if (anglerId) sectorByAngler.set(anglerId, sectorNameById.get(entry.sector_id) ?? "");
+    if (anglerId && entry.sector_id) {
+      sectorByAngler.set(anglerId, sectorNameById.get(entry.sector_id) ?? "");
+    }
   }
   const pairName = new Map(
     (pairs ?? []).map((p: Pair) => [
@@ -239,7 +241,7 @@ export async function loadCompetitionStandings(
   const scorecardsToRank: CompetitionScorecardToRank[] = (scorecards ?? [])
     .map((sc: { entry_id: string; round_id: string; catch: { size_cm: number }[] }) => {
       const entry = entryById.get(sc.entry_id);
-      if (!entry) return null;
+      if (!entry || !entry.sector_id) return null; // only fishing entries score (issue 35).
       const anglerId = anglerByLot.get(entry.lot_id) ?? "";
       if (!anglerId) return null;
       const catches: Catch[] = (sc.catch ?? []).map((c) => ({ sizeCm: Number(c.size_cm) }));

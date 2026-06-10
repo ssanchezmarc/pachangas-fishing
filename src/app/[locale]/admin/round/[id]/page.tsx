@@ -253,6 +253,7 @@ export default async function AdminRoundPage({
               <tr>
                 <th>{t("thLot")}</th>
                 <th>{t("thAngler")}</th>
+                <th>{t("thRole")}</th>
                 <th>{t("thSector")}</th>
                 <th>{t("thControls")}</th>
                 <th>{t("thScorecard")}</th>
@@ -266,7 +267,8 @@ export default async function AdminRoundPage({
                   <tr key={e.id}>
                     <td>{lot ? `#${lot.number}` : "?"}</td>
                     <td>{entryAngler(e)}</td>
-                    <td>{sectorNameById.get(e.sector_id) ?? "?"}</td>
+                    <td>{t(`role.${e.role}`)}</td>
+                    <td>{e.sector_id ? (sectorNameById.get(e.sector_id) ?? "?") : "—"}</td>
                     <td>{lotLabel(e.controls_lot_id)}</td>
                     <td>
                       {scorecard ? (
@@ -291,6 +293,7 @@ export default async function AdminRoundPage({
           </table>
         )}
 
+        <p className="muted">{t("rosterRoleHelp")}</p>
         <form action={addEntry} style={{ marginTop: "1rem", display: "grid", gap: "0.5rem" }}>
           <input type="hidden" name="round_id" value={id} />
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
@@ -302,7 +305,11 @@ export default async function AdminRoundPage({
                 </option>
               ))}
             </select>
-            <select name="sector_id" required>
+            <select name="role" defaultValue="fish">
+              <option value="fish">{t("role.fish")}</option>
+              <option value="control">{t("role.control")}</option>
+            </select>
+            <select name="sector_id">
               <option value="">{t("sectorPlaceholder")}</option>
               {secs.map((s) => (
                 <option key={s.id} value={s.id}>
