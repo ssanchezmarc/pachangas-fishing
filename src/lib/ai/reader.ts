@@ -59,23 +59,30 @@ Lee la foto de la plica y devuelve SOLO un JSON con esta forma exacta:
 }
 No incluyas texto fuera del JSON.`;
 
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
+/** Google Gemini exposes an OpenAI-compatible endpoint, so the same reader works. */
+const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+
 /**
- * Slice 07 — Real reader backed by OpenAI GPT-4o vision (model decision: GPT-4o).
- * Sends the image as a data URL with JSON-mode output and validates the response
- * against the schema. Kept behind the ScorecardReader interface so nothing else in
- * the system knows the provider.
+ * Slice 07 — Real reader for any OpenAI-compatible vision API (OpenAI GPT-4o or
+ * Google Gemini via its compatibility endpoint). Sends the image as a data URL
+ * with JSON-mode output and validates the response against the schema. Kept
+ * behind the ScorecardReader interface so nothing else in the system knows the
+ * provider — only the base URL + model + key change.
  */
-export class OpenAIReader implements ScorecardReader {
+export class OpenAICompatibleReader implements ScorecardReader {
   constructor(
     private readonly apiKey: string,
-    private readonly model = process.env.OPENAI_VISION_MODEL ?? "gpt-4o",
+    private readonly model: string,
+    private readonly baseUrl: string = OPENAI_BASE_URL,
+    private readonly providerName: string = "OpenAI",
   ) {}
 
   async read(input: ReadInput): Promise<ParsedScorecardReading> {
     const bytes = input.image instanceof Uint8Array ? input.image : new Uint8Array(input.image);
     const dataUrl = `data:${input.mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -97,22 +104,37 @@ export class OpenAIReader implements ScorecardReader {
     });
 
     if (!res.ok) {
-      throw new Error(`OpenAI reading failed (${res.status}): ${await res.text()}`);
+      throw new Error(`${this.providerName} reading failed (${res.status}): ${await res.text()}`);
     }
     const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = json.choices?.[0]?.message?.content;
-    if (!content) throw new Error("OpenAI returned an empty reading.");
+    if (!content) throw new Error(`${this.providerName} returned an empty reading.`);
     return parseScorecardReading(JSON.parse(content));
+  }
+}
+
+/** Back-compat alias: OpenAI is just the default OpenAI-compatible reader. */
+export class OpenAIReader extends OpenAICompatibleReader {
+  constructor(apiKey: string, model = process.env.OPENAI_VISION_MODEL ?? "gpt-4o") {
+    super(apiKey, model, OPENAI_BASE_URL, "OpenAI");
   }
 }
 
 /**
  * Resolves the reader to use, based on `AI_PROVIDER`. Defaults to the mock so the
- * flow runs locally without spending on the LLM (and CI has no key). Set
- * `AI_PROVIDER=openai` + `OPENAI_API_KEY` to use the real GPT-4o reader.
+ * flow runs locally without spending on the LLM (and CI has no key).
+ *   - `AI_PROVIDER=gemini` + `GEMINI_API_KEY`: free tier (Google AI Studio), no
+ *     credit card; model from `GEMINI_VISION_MODEL` (default gemini-2.0-flash).
+ *   - `AI_PROVIDER=openai` + `OPENAI_API_KEY`: GPT-4o (pay-as-you-go).
  */
 export function resolveReader(): ScorecardReader {
   const provider = process.env.AI_PROVIDER;
+  if (provider === "gemini") {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) throw new Error("AI_PROVIDER=gemini requires GEMINI_API_KEY.");
+    const model = process.env.GEMINI_VISION_MODEL ?? "gemini-2.0-flash";
+    return new OpenAICompatibleReader(key, model, GEMINI_BASE_URL, "Gemini");
+  }
   if (provider === "openai") {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error("AI_PROVIDER=openai requires OPENAI_API_KEY.");
