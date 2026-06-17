@@ -38,24 +38,35 @@ export class MockReader implements ScorecardReader {
  * pins the exact JSON contract (reading-schema). The 3 signals per catch (tens +
  * units marks + handwritten size) and the foot totals are what the checksum
  * validation (slice 08) cross-checks.
+ *
+ * Tuned against a real "Alto Carrión" plica (src/lib/ai/fixtures/plica-lote17.jpg):
+ * without the structural guidance below, the model hallucinates a full catch list
+ * from an empty grid. The key is "an empty cell is NOT a catch" + treating the
+ * handwritten foot totals as authoritative.
  */
-const READING_PROMPT = `Eres un lector experto de "plicas" de concursos de pesca (FEPyC).
-Lee la foto de la plica y devuelve SOLO un JSON con esta forma exacta:
+const READING_PROMPT = `Eres un lector experto de "plicas" de papel de concursos de pesca FEPyC (liga "Alto Carrión"). Lee la foto y devuelve SOLO un JSON. NO inventes datos: si una casilla está vacía, NO es una captura.
+
+ESTRUCTURA DE LA PLICA:
+- Arriba: número de lote (manuscrito, normalmente arriba a la derecha en rojo) y datos de la manga.
+- Cuerpo: una rejilla de casillas numeradas (1, 2, 3, …). CADA casilla es una posible pieza y contiene la etiqueta "Talla:" y DOS filas de dígitos 0-9 (fila de decenas y fila de unidades).
+- UNA CASILLA SOLO CUENTA COMO CAPTURA SI tiene dígitos REALMENTE marcados/rodeados (un círculo o marca clara sobre un número de cada fila) Y/O una talla escrita a mano en "Talla:". Una casilla en blanco, o con una raya/aspa diagonal que la cruza (anulación), NO es una captura: ignórala.
+- Pie de la plica (datos AUTORITATIVOS, úsalos como checksum y para los totales):
+  * "TOTAL CAPTURAS TALLA" = número de capturas de talla legal (legalCatches).
+  * "TOTAL CAPTURAS MENORES TALLA" = número de piezas menores de talla (undersizedCatches).
+  * "PIEZA MAYOR" = talla en cm de la mayor (biggestCatchCm); si está vacío, 0.
+
+REGLAS:
+- Si la rejilla de piezas está vacía (sin marcas), devuelve "catches": [] aunque haya rayas de anulación.
+- El número de entradas en "catches" debe coincidir con "legalCatches" del pie. Si no puedes leer marcas individuales pero el pie dice 0, devuelve catches vacío.
+- No rellenes capturas para que "cuadre"; prefiere reflejar lo que realmente ves.
+- Mira con MUCHA atención los números manuscritos del pie en "TOTAL CAPTURAS TALLA" y "TOTAL CAPTURAS MENORES TALLA" (suele ser un único dígito; un círculo grande es un "0"). Para "undersizedCatches", cuenta además las aspas (X) tachadas en la fila inferior "CAPTURAS MENORES TALLA" (cada aspa = una pieza menor).
+
+Devuelve EXACTAMENTE esta forma:
 {
-  "lot": string,                      // número de lote/dorsal del pescador
-  "catches": [                        // una entrada por pieza
-    { "tens": number,                 // dígito de decenas marcado (0-9)
-      "units": number,                // dígito de unidades marcado (0-9)
-      "handwrittenSize": number }     // talla manuscrita en cm (puede ser decimal)
-  ],
-  "totals": {
-    "legalCatches": number,           // total de capturas de talla (pie de la plica)
-    "undersizedCatches": number,      // total de menores de talla
-    "biggestCatchCm": number          // pieza mayor en cm
-  },
-  "confidence": {                     // tu autoconfianza por bloque, 0..1
-    "lot": number, "catches": number, "totals": number
-  }
+  "lot": string,
+  "catches": [ { "tens": number, "units": number, "handwrittenSize": number } ],
+  "totals": { "legalCatches": number, "undersizedCatches": number, "biggestCatchCm": number },
+  "confidence": { "lot": number, "catches": number, "totals": number }
 }
 No incluyas texto fuera del JSON.`;
 
