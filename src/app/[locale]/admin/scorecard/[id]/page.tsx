@@ -69,17 +69,17 @@ export default async function ScorecardDetailPage({
   const claimList = (claims ?? []) as Claim[];
   const ph = photo as ScorecardPhoto | null;
 
-  // Resolve the lot's angler and a signed URL for the private evidence photo.
+  // Resolve the lot number and the member the plica is attributed to (issue 42:
+  // scorecard.angler_id; a pairs lot has no single angler of its own).
   let anglerName = "?";
   let lotNumber: number | null = null;
   if (e) {
     const { data: lot } = await supabase.from("lot").select("*").eq("id", e.lot_id).single();
-    const l = lot as Lot | null;
-    if (l) {
-      lotNumber = l.number;
-      const { data: angler } = await supabase.from("angler").select("*").eq("id", l.angler_id).single();
-      anglerName = (angler as Angler | null)?.name ?? "?";
-    }
+    lotNumber = (lot as Lot | null)?.number ?? null;
+  }
+  if (sc.angler_id) {
+    const { data: angler } = await supabase.from("angler").select("*").eq("id", sc.angler_id).single();
+    anglerName = (angler as Angler | null)?.name ?? "?";
   }
 
   let photoUrl: string | null = null;

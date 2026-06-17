@@ -16,7 +16,6 @@ import type { Catch } from "@/domain/types";
 import type {
   Angler,
   Competition,
-  Lot,
   Pair,
   Round,
   RoundEntry,
@@ -66,18 +65,51 @@ export interface CompetitionStandingsView {
 }
 
 /**
+ * A competition enriched for the public landing (issue 38): club name and the
+ * date range derived from its rounds.
+ */
+export interface CompetitionListItem extends Competition {
+  clubName: string | null;
+  /** Earliest round date (ISO), or null when no round has a date. */
+  dateStart: string | null;
+  /** Latest round date (ISO); equals `dateStart` for a single day. */
+  dateEnd: string | null;
+}
+
+/**
  * Lists competitions for the public landing (issue 15). Only publicly-visible
  * statuses are returned — draft and closed stay organizers-only (issue 28).
+ * Each item also carries its club name and the date range of its rounds (issue 38).
  */
-export async function listCompetitions(): Promise<Competition[]> {
+export async function listCompetitions(): Promise<CompetitionListItem[]> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase
     .from("competition")
-    .select("*")
+    .select("*, club(name), round(date)")
     .in("status", PUBLIC_COMPETITION_STATUSES)
     .order("created_at", { ascending: false });
   if (error) throw error;
-  return (data ?? []) as Competition[];
+
+  type Row = Competition & {
+    club: { name: string } | { name: string }[] | null;
+    round: { date: string | null }[] | null;
+  };
+
+  return (data ?? []).map((row) => {
+    const r = row as Row;
+    const club = Array.isArray(r.club) ? r.club[0] : r.club;
+    const dates = (r.round ?? [])
+      .map((x) => x.date)
+      .filter((d): d is string => Boolean(d))
+      .sort();
+    const { club: _club, round: _round, ...competition } = r;
+    return {
+      ...(competition as Competition),
+      clubName: club?.name ?? null,
+      dateStart: dates[0] ?? null,
+      dateEnd: dates[dates.length - 1] ?? null,
+    };
+  });
 }
 
 /** Lists all rounds (for the public landing). */
@@ -109,37 +141,33 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
   // A round of a non-public competition (draft / closed) is hidden too (issue 28).
   if (!competition || !isPubliclyVisible(competition.status)) return null;
 
-  const [{ data: entries }, { data: sectors }, { data: anglers }, { data: pairs }, { data: lots }] =
+  const [{ data: entries }, { data: sectors }, { data: anglers }, { data: pairs }] =
     await Promise.all([
       supabase.from("round_entry").select("*").eq("round_id", roundId),
-      supabase.from("sector").select("*").eq("round_id", roundId),
+      supabase.from("sector").select("*").eq("competition_id", round.competition_id),
       supabase.from("angler").select("*").eq("competition_id", round.competition_id),
       supabase.from("pair").select("*").eq("competition_id", round.competition_id),
-      supabase.from("lot").select("*").eq("competition_id", round.competition_id),
     ]);
 
   // Confirmed/auto scorecards of the round with their catches.
   const { data: scorecards } = await supabase
     .from("scorecard")
-    .select("id, entry_id, status, catch(size_cm, undersized)")
+    .select("id, entry_id, angler_id, status, catch(size_cm, undersized)")
     .eq("round_id", roundId)
     .in("status", ["auto", "confirmed"]);
 
   const entryById = new Map((entries ?? []).map((e: RoundEntry) => [e.id, e]));
   const sectorNameById = new Map((sectors ?? []).map((s: Sector) => [s.id, s.name]));
   const anglerNameById = new Map((anglers ?? []).map((a: Angler) => [a.id, a.name]));
-  // The angler fishing a round_entry is derived from its lot (issue 20).
-  const anglerByLot = new Map((lots ?? []).map((l: Lot) => [l.id, l.angler_id]));
-  const anglerByEntry = (e: RoundEntry) => anglerByLot.get(e.lot_id) ?? "";
 
+  // The angler is the member who turned in the plica (issue 42); only fishing
+  // entries score (a controller's plica, if any, is ignored).
   const scorecardsToRank: ScorecardToRank[] = (scorecards ?? [])
-    .map((sc: { entry_id: string; catch: { size_cm: number }[] }) => {
+    .map((sc: { entry_id: string; angler_id: string | null; catch: { size_cm: number }[] }) => {
       const entry = entryById.get(sc.entry_id);
-      if (!entry || !entry.sector_id) return null; // only fishing entries score (issue 35).
-      const anglerId = anglerByEntry(entry);
-      if (!anglerId) return null;
+      if (!entry || entry.role !== "fish" || !sc.angler_id) return null;
       const catches: Catch[] = (sc.catch ?? []).map((c) => ({ sizeCm: Number(c.size_cm) }));
-      return { anglerId, sectorId: entry.sector_id, catches };
+      return { anglerId: sc.angler_id, sectorId: entry.sector_id, catches };
     })
     .filter((x): x is ScorecardToRank => x !== null);
 
@@ -155,12 +183,12 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
     })),
   });
 
-  // Each angler's sector (to show in the individual table).
+  // Each angler's sector (to show in the individual table), from the plica's entry.
   const sectorByAngler = new Map<string, string>();
-  for (const entry of entries ?? []) {
-    const anglerId = anglerByEntry(entry);
-    if (anglerId && entry.sector_id) {
-      sectorByAngler.set(anglerId, sectorNameById.get(entry.sector_id) ?? "");
+  for (const sc of (scorecards ?? []) as { entry_id: string; angler_id: string | null }[]) {
+    const entry = entryById.get(sc.entry_id);
+    if (sc.angler_id && entry && entry.role === "fish") {
+      sectorByAngler.set(sc.angler_id, sectorNameById.get(entry.sector_id) ?? "");
     }
   }
   const pairName = new Map(
@@ -217,35 +245,31 @@ export async function loadCompetitionStandings(
   const roundList = (rounds ?? []) as Round[];
   const roundIds = roundList.map((r) => r.id);
 
-  const [{ data: entries }, { data: anglers }, { data: pairs }, { data: lots }] = await Promise.all([
+  const [{ data: entries }, { data: anglers }, { data: pairs }] = await Promise.all([
     roundIds.length
       ? supabase.from("round_entry").select("*").in("round_id", roundIds)
       : Promise.resolve({ data: [] as RoundEntry[] }),
     supabase.from("angler").select("*").eq("competition_id", competitionId),
     supabase.from("pair").select("*").eq("competition_id", competitionId),
-    supabase.from("lot").select("*").eq("competition_id", competitionId),
   ]);
 
   const { data: scorecards } = roundIds.length
     ? await supabase
         .from("scorecard")
-        .select("id, entry_id, round_id, status, catch(size_cm, undersized)")
+        .select("id, entry_id, round_id, angler_id, status, catch(size_cm, undersized)")
         .in("round_id", roundIds)
         .in("status", ["auto", "confirmed"])
-    : { data: [] as { id: string; entry_id: string; round_id: string; catch: { size_cm: number }[] }[] };
+    : { data: [] as { id: string; entry_id: string; round_id: string; angler_id: string | null; catch: { size_cm: number }[] }[] };
 
   const entryById = new Map((entries ?? []).map((e: RoundEntry) => [e.id, e]));
   const anglerNameById = new Map((anglers ?? []).map((a: Angler) => [a.id, a.name]));
-  const anglerByLot = new Map((lots ?? []).map((l: Lot) => [l.id, l.angler_id]));
 
   const scorecardsToRank: CompetitionScorecardToRank[] = (scorecards ?? [])
-    .map((sc: { entry_id: string; round_id: string; catch: { size_cm: number }[] }) => {
+    .map((sc: { entry_id: string; round_id: string; angler_id: string | null; catch: { size_cm: number }[] }) => {
       const entry = entryById.get(sc.entry_id);
-      if (!entry || !entry.sector_id) return null; // only fishing entries score (issue 35).
-      const anglerId = anglerByLot.get(entry.lot_id) ?? "";
-      if (!anglerId) return null;
+      if (!entry || entry.role !== "fish" || !sc.angler_id) return null;
       const catches: Catch[] = (sc.catch ?? []).map((c) => ({ sizeCm: Number(c.size_cm) }));
-      return { roundId: sc.round_id, anglerId, sectorId: entry.sector_id, catches };
+      return { roundId: sc.round_id, anglerId: sc.angler_id, sectorId: entry.sector_id, catches };
     })
     .filter((x): x is CompetitionScorecardToRank => x !== null);
 

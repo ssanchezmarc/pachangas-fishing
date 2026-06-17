@@ -36,3 +36,4 @@ npm-debug.log*
 # AI reader fixtures — real plica photos with handwritten signatures (PII);
 # kept locally to run the gated #07 fixture test, never committed.
 /src/lib/ai/fixtures/
+.vercel

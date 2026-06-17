@@ -6,7 +6,6 @@ import {
   confirmScorecard,
   correctScorecard,
   createScorecardManual,
-  createSector,
   addEntry,
   processScorecardReading,
   transitionRound,
@@ -44,7 +43,7 @@ export default async function AdminRoundPage({
     { data: claims },
     { data: lots },
   ] = await Promise.all([
-    supabase.from("sector").select("*").eq("round_id", id).order("name"),
+    supabase.from("sector").select("*").eq("competition_id", r.competition_id).order("name"),
     supabase.from("round_entry").select("*").eq("round_id", id),
     supabase.from("angler").select("*").eq("competition_id", r.competition_id).order("name"),
     supabase.from("scorecard").select("*").eq("round_id", id),
@@ -59,7 +58,14 @@ export default async function AdminRoundPage({
   const claimList = (claims ?? []) as Claim[];
   const lotList = (lots ?? []) as Lot[];
 
-  const scorecardByEntry = new Map(scorecardList.map((s) => [s.entry_id, s]));
+  // A lot pattern (entry) can carry more than one plica now: in pairs the two
+  // members share the lot, each turning in their own (issue 42).
+  const scorecardsByEntry = new Map<string, Scorecard[]>();
+  for (const s of scorecardList) {
+    const arr = scorecardsByEntry.get(s.entry_id) ?? [];
+    arr.push(s);
+    scorecardsByEntry.set(s.entry_id, arr);
+  }
   // Open-claim count per scorecard (issue 25): flag plicas with pending claims.
   const openClaimsByScorecard = new Map<string, number>();
   for (const c of claimList) {
@@ -71,16 +77,15 @@ export default async function AdminRoundPage({
   const sectorNameById = new Map(secs.map((s) => [s.id, s.name]));
   const entryById = new Map(entryList.map((e) => [e.id, e]));
   const lotById = new Map(lotList.map((l) => [l.id, l]));
-  // Derive the angler / lot label of a round_entry through its lot (issue 20).
+  // Who a lot is drawn to: an angler (individual) or a pair (pairs); may be undrawn.
+  const lotAssignee = (l: Lot): string =>
+    l.angler_id ? (anglerNameById.get(l.angler_id) ?? "?") : l.pair_id ? t("pairLot") : t("undrawn");
+  // Label of a lot pattern (entry) through its lot.
   const lotLabel = (lotId: string | null) => {
     if (!lotId) return "—";
     const lot = lotById.get(lotId);
     if (!lot) return "?";
-    return `#${lot.number} · ${anglerNameById.get(lot.angler_id) ?? "?"}`;
-  };
-  const entryAngler = (e: RoundEntry) => {
-    const lot = lotById.get(e.lot_id);
-    return lot ? (anglerNameById.get(lot.angler_id) ?? "?") : "?";
+    return `#${lot.number} · ${lotAssignee(lot)}`;
   };
   // Lots not yet entered in this round (available to add to the roster).
   const enteredLotIds = new Set(entryList.map((e) => e.lot_id));
@@ -229,18 +234,13 @@ export default async function AdminRoundPage({
 
       <section className="card">
         <h2>{t("sectors")}</h2>
+        <p className="muted">{t("sectorsManagedHelp")}</p>
+        {secs.length === 0 && <span className="muted">{t("noSectorsRound")}</span>}
         {secs.map((s) => (
           <span key={s.id} className="badge open" style={{ marginRight: 6 }}>
             {s.name}
           </span>
         ))}
-        <form action={createSector} style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
-          <input type="hidden" name="round_id" value={id} />
-          <input name="name" placeholder={t("newSector")} required />
-          <button className="primary" type="submit">
-            {t("addSector")}
-          </button>
-        </form>
       </section>
 
       <section className="card">
@@ -252,38 +252,41 @@ export default async function AdminRoundPage({
             <thead>
               <tr>
                 <th>{t("thLot")}</th>
-                <th>{t("thAngler")}</th>
                 <th>{t("thRole")}</th>
                 <th>{t("thSector")}</th>
-                <th>{t("thControls")}</th>
                 <th>{t("thScorecard")}</th>
               </tr>
             </thead>
             <tbody>
               {entryList.map((e) => {
-                const scorecard = scorecardByEntry.get(e.id);
+                const cards = scorecardsByEntry.get(e.id) ?? [];
                 const lot = lotById.get(e.lot_id);
                 return (
                   <tr key={e.id}>
-                    <td>{lot ? `#${lot.number}` : "?"}</td>
-                    <td>{entryAngler(e)}</td>
+                    <td>{lot ? `#${lot.number} · ${lotAssignee(lot)}` : "?"}</td>
                     <td>{t(`role.${e.role}`)}</td>
-                    <td>{e.sector_id ? (sectorNameById.get(e.sector_id) ?? "?") : "—"}</td>
-                    <td>{lotLabel(e.controls_lot_id)}</td>
+                    <td>{sectorNameById.get(e.sector_id) ?? "?"}</td>
                     <td>
-                      {scorecard ? (
-                        <Link href={`/admin/scorecard/${scorecard.id}`}>
-                          <span className={`badge ${scorecard.status === "flagged" ? "provisional" : "final"}`}>
-                            {ts(`scorecard.${scorecard.status}`)} · {scorecard.catch_points} {t("pts")}
-                          </span>
-                          {openClaimsByScorecard.get(scorecard.id) ? (
-                            <span className="badge provisional" style={{ marginLeft: 4 }}>
-                              ⚠ {openClaimsByScorecard.get(scorecard.id)}
-                            </span>
-                          ) : null}
-                        </Link>
-                      ) : (
+                      {cards.length === 0 ? (
                         <span className="muted">{t("noScorecard")}</span>
+                      ) : (
+                        cards.map((scorecard) => (
+                          <div key={scorecard.id}>
+                            <Link href={`/admin/scorecard/${scorecard.id}`}>
+                              {scorecard.angler_id && (
+                                <span style={{ marginRight: 4 }}>{anglerNameById.get(scorecard.angler_id) ?? "?"}</span>
+                              )}
+                              <span className={`badge ${scorecard.status === "flagged" ? "provisional" : "final"}`}>
+                                {ts(`scorecard.${scorecard.status}`)} · {scorecard.catch_points} {t("pts")}
+                              </span>
+                              {openClaimsByScorecard.get(scorecard.id) ? (
+                                <span className="badge provisional" style={{ marginLeft: 4 }}>
+                                  ⚠ {openClaimsByScorecard.get(scorecard.id)}
+                                </span>
+                              ) : null}
+                            </Link>
+                          </div>
+                        ))
                       )}
                     </td>
                   </tr>
@@ -301,7 +304,7 @@ export default async function AdminRoundPage({
               <option value="">{t("lotPlaceholder")}</option>
               {availableLots.map((l) => (
                 <option key={l.id} value={l.id}>
-                  #{l.number} · {anglerNameById.get(l.angler_id) ?? "?"}
+                  #{l.number} · {lotAssignee(l)}
                 </option>
               ))}
             </select>
@@ -309,19 +312,11 @@ export default async function AdminRoundPage({
               <option value="fish">{t("role.fish")}</option>
               <option value="control">{t("role.control")}</option>
             </select>
-            <select name="sector_id">
+            <select name="sector_id" required>
               <option value="">{t("sectorPlaceholder")}</option>
               {secs.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
-                </option>
-              ))}
-            </select>
-            <select name="controls_lot_id">
-              <option value="">{t("controlsOptional")}</option>
-              {lotList.map((l) => (
-                <option key={l.id} value={l.id}>
-                  #{l.number} · {anglerNameById.get(l.angler_id) ?? "?"}
                 </option>
               ))}
             </select>
@@ -345,27 +340,22 @@ export default async function AdminRoundPage({
             <input name="photo" type="file" accept="image/*" style={{ display: "block", marginTop: 4 }} />
           </label>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            <select name="lot_id" required>
-              <option value="">{t("lotAnglerPlaceholder")}</option>
-              {lotList.map((l) => (
-                <option key={l.id} value={l.id}>
-                  #{l.number} · {anglerNameById.get(l.angler_id) ?? "?"}
-                </option>
-              ))}
+            <select name="entry_id" required>
+              <option value="">{t("entryPlaceholder")}</option>
+              {entryList.map((e) => {
+                const lot = lotById.get(e.lot_id);
+                return (
+                  <option key={e.id} value={e.id}>
+                    {lot ? `#${lot.number}` : "?"} · {t(`role.${e.role}`)} · {sectorNameById.get(e.sector_id) ?? "?"}
+                  </option>
+                );
+              })}
             </select>
-            <select name="sector_id" required>
-              <option value="">{t("sectorPlaceholder")}</option>
-              {secs.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-            <select name="controls_lot_id">
-              <option value="">{t("controlsOptional")}</option>
-              {lotList.map((l) => (
-                <option key={l.id} value={l.id}>
-                  #{l.number} · {anglerNameById.get(l.angler_id) ?? "?"}
+            <select name="angler_id" required>
+              <option value="">{t("memberPlaceholder")}</option>
+              {anglerList.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
                 </option>
               ))}
             </select>
@@ -382,13 +372,24 @@ export default async function AdminRoundPage({
             {t("saveManual")}
           </button>
         </form>
-        <form action={processScorecardReading} style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+        <form action={processScorecardReading} style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
           <input type="hidden" name="round_id" value={id} />
           <select name="entry_id" required>
-            <option value="">{t("lotAnglerPlaceholder")}</option>
-            {entryList.map((e) => (
-              <option key={e.id} value={e.id}>
-                {lotLabel(e.lot_id)}
+            <option value="">{t("entryPlaceholder")}</option>
+            {entryList.map((e) => {
+              const lot = lotById.get(e.lot_id);
+              return (
+                <option key={e.id} value={e.id}>
+                  {lot ? `#${lot.number}` : "?"} · {sectorNameById.get(e.sector_id) ?? "?"}
+                </option>
+              );
+            })}
+          </select>
+          <select name="angler_id" required>
+            <option value="">{t("memberPlaceholder")}</option>
+            {anglerList.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
               </option>
             ))}
           </select>

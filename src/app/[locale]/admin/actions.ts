@@ -8,7 +8,8 @@
  */
 import { revalidatePath } from "next/cache";
 import { redirect } from "@/i18n/navigation";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServerClient, createSupabaseServiceClient } from "@/lib/supabase/server";
+import { headers } from "next/headers";
 import { scoreScorecard } from "@/domain/scoring";
 import type { ScoringConfig, Catch } from "@/domain/types";
 import { ALTO_CARRION_PRESET } from "@/domain/types";
@@ -52,6 +53,136 @@ export async function createClub(formData: FormData) {
   if (eMember) throw new Error(eMember.message);
 
   revalidatePath("/admin");
+}
+
+/** Throws unless the current user is a member of `clubId`. Returns their user id. */
+async function assertClubMember(clubId: string): Promise<string> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated.");
+  const { data } = await supabase
+    .from("club_member")
+    .select("club_id")
+    .eq("club_id", clubId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (!data) throw new Error("Not a member of this club.");
+  return user.id;
+}
+
+/** Finds an auth user by email via the service role. `null` if none. */
+async function findUserByEmail(email: string): Promise<{ id: string; email: string } | null> {
+  const svc = createSupabaseServiceClient();
+  const target = email.toLowerCase();
+  // The admin API has no email filter; page through (small organizer base).
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await svc.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) throw new Error(error.message);
+    const hit = data.users.find((u) => (u.email ?? "").toLowerCase() === target);
+    if (hit) return { id: hit.id, email: hit.email ?? email };
+    if (data.users.length < 200) break; // last page
+  }
+  return null;
+}
+
+/** An organizer of a club, enriched with their email (issue 37). */
+export interface ClubOrganizer {
+  user_id: string;
+  role: string;
+  email: string;
+}
+
+/**
+ * Issue 37 — Lists the organizers of a club (member-readable via RLS), enriched with
+ * their email through the service role (emails live in auth.users).
+ */
+export async function listClubOrganizers(clubId: string): Promise<ClubOrganizer[]> {
+  const supabase = await createSupabaseServerClient();
+  const { data: members, error } = await supabase
+    .from("club_member")
+    .select("user_id, role")
+    .eq("club_id", clubId)
+    .order("created_at");
+  if (error) throw new Error(error.message);
+  const svc = createSupabaseServiceClient();
+  const out: ClubOrganizer[] = [];
+  for (const m of members ?? []) {
+    const { data } = await svc.auth.admin.getUserById(m.user_id);
+    out.push({ user_id: m.user_id, role: m.role, email: data?.user?.email ?? "?" });
+  }
+  return out;
+}
+
+/** Absolute origin of the current request (for invite redirect URLs). */
+async function requestOrigin(): Promise<string> {
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
+  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  return `${proto}://${host}`;
+}
+
+/**
+ * Issue 36/37 — Adds an organizer to a club by email. If the email already has an
+ * account it is linked (a club_member row); otherwise an invitation email is sent
+ * (Supabase inviteUserByEmail), which creates the pending account and lets them set
+ * a password on first access (see /api/auth/confirm + /admin/accept). The
+ * cross-user club_member insert goes through the service role after the caller's
+ * membership is verified.
+ */
+export async function inviteOrganizer(formData: FormData) {
+  const club_id = String(formData.get("club_id") ?? "");
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  if (!club_id) throw new Error("Club required.");
+  if (!email) throw new Error("Email required.");
+  await assertClubMember(club_id);
+
+  const svc = createSupabaseServiceClient();
+  let userId: string;
+  const existing = await findUserByEmail(email);
+  if (existing) {
+    userId = existing.id;
+  } else {
+    const redirectTo = `${await requestOrigin()}/api/auth/confirm?next=/admin/accept`;
+    const { data, error } = await svc.auth.admin.inviteUserByEmail(email, { redirectTo });
+    if (error || !data?.user) throw new Error(error?.message ?? "Could not send the invitation.");
+    userId = data.user.id;
+  }
+
+  // Link to the club (idempotent: ignore if already a member).
+  const { error: eMember } = await svc
+    .from("club_member")
+    .upsert({ club_id, user_id: userId, role: "owner" }, { onConflict: "club_id,user_id" });
+  if (eMember) throw new Error(eMember.message);
+
+  revalidatePath(`/admin/club/${club_id}`);
+}
+
+/**
+ * Issue 37 — Removes an organizer from a club. Refuses to leave the club with no
+ * organizers. Runs with the service role after verifying the caller's membership.
+ */
+export async function removeOrganizer(formData: FormData) {
+  const club_id = String(formData.get("club_id") ?? "");
+  const user_id = String(formData.get("user_id") ?? "");
+  if (!club_id || !user_id) throw new Error("Club and organizer required.");
+  await assertClubMember(club_id);
+
+  const svc = createSupabaseServiceClient();
+  const { count } = await svc
+    .from("club_member")
+    .select("user_id", { count: "exact", head: true })
+    .eq("club_id", club_id);
+  if ((count ?? 0) <= 1) throw new Error("A club must keep at least one organizer.");
+
+  const { error } = await svc
+    .from("club_member")
+    .delete()
+    .eq("club_id", club_id)
+    .eq("user_id", user_id);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/club/${club_id}`);
 }
 
 /**
@@ -231,14 +362,18 @@ export async function deleteRound(formData: FormData) {
   if (competition_id) redirect({ href: `/admin/competition/${competition_id}`, locale });
 }
 
+/**
+ * Issue 41 — Sectors are a competition-level reusable catalog (label). The name may
+ * be a single stretch ("A") or a composite the pair self-organizes within ("17/18/19").
+ */
 export async function createSector(formData: FormData) {
   const supabase = await createSupabaseServerClient();
-  const round_id = String(formData.get("round_id") ?? "");
+  const competition_id = String(formData.get("competition_id") ?? "");
   const name = String(formData.get("name") ?? "").trim();
-  if (!round_id || !name) throw new Error("Round and name required.");
-  const { error } = await supabase.from("sector").insert({ round_id, name });
+  if (!competition_id || !name) throw new Error("Competition and name required.");
+  const { error } = await supabase.from("sector").insert({ competition_id, name });
   if (error) throw new Error(error.message);
-  revalidatePath(`/admin/round/${round_id}`);
+  revalidatePath(`/admin/competition/${competition_id}`);
 }
 
 /**
@@ -263,54 +398,64 @@ export async function createAngler(formData: FormData) {
 }
 
 /**
- * Issue 20/35: registers a lot — the number drawn in the sorteo, scoped to a
- * competition, assigned to an angler. The lot number is no longer unique on its own
- * (a pair shares it, issue 35); one lot per angler still holds.
+ * Issue 42 — Registers a lot (the number drawn in the sorteo) without an angler yet:
+ * the lot's per-round pattern (fish/control + sector) is defined separately
+ * (round_entry) and the draw assigns it to an angler/pair later (assignLotAngler /
+ * assignLotPair). The number is unique within the competition.
  */
 export async function createLot(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const competition_id = String(formData.get("competition_id") ?? "");
-  const angler_id = String(formData.get("angler_id") ?? "");
   const number = Number(String(formData.get("number") ?? "").trim());
-  if (!competition_id || !angler_id) throw new Error("Competition and angler required.");
+  if (!competition_id) throw new Error("Competition required.");
   if (!Number.isInteger(number) || number <= 0) throw new Error("A positive lot number is required.");
-  const { error } = await supabase.from("lot").insert({ competition_id, angler_id, number });
+  const { error } = await supabase.from("lot").insert({ competition_id, number });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
 
 /**
- * Issue 35 — Assigns ONE lot number to a pair: under the hood it creates a lot per
- * member (same number, one per angler), so each member keeps their own scorecard
- * while the shared number links them.
+ * Issue 43 — The draw, individual competition: assigns a defined lot to an angler.
+ * An empty angler clears the assignment. Setting an angler clears any pair link.
  */
-export async function assignPairLot(formData: FormData) {
+export async function assignLotAngler(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const competition_id = String(formData.get("competition_id") ?? "");
-  const pair_id = String(formData.get("pair_id") ?? "");
-  const number = Number(String(formData.get("number") ?? "").trim());
-  if (!competition_id || !pair_id) throw new Error("Competition and pair required.");
-  if (!Number.isInteger(number) || number <= 0) throw new Error("A positive lot number is required.");
-
-  const { data: pair } = await supabase
-    .from("pair")
-    .select("angler1_id, angler2_id")
-    .eq("id", pair_id)
-    .single();
-  if (!pair) throw new Error("Pair not found.");
-
-  const { error } = await supabase.from("lot").insert([
-    { competition_id, angler_id: pair.angler1_id, number },
-    { competition_id, angler_id: pair.angler2_id, number },
-  ]);
+  const lot_id = String(formData.get("lot_id") ?? "");
+  const angler_id = String(formData.get("angler_id") ?? "") || null;
+  if (!competition_id || !lot_id) throw new Error("Competition and lot required.");
+  const { error } = await supabase
+    .from("lot")
+    .update({ angler_id, pair_id: null })
+    .eq("id", lot_id);
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
 
 /**
- * Roster: the lot's role in a round (issue 35). A `fish` entry fishes a sector; a
- * `control` entry controls another lot (no sector). The fish/control inversion of a
- * phase (issue 18/31) is just different roles per round.
+ * Issue 43/40 — The draw, pairs competition: assigns ONE lot to the whole pair (one
+ * lot per pair). An empty pair clears the assignment. Setting a pair clears any
+ * single-angler link.
+ */
+export async function assignLotPair(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const lot_id = String(formData.get("lot_id") ?? "");
+  const pair_id = String(formData.get("pair_id") ?? "") || null;
+  if (!competition_id || !lot_id) throw new Error("Competition and lot required.");
+  const { error } = await supabase
+    .from("lot")
+    .update({ pair_id, angler_id: null })
+    .eq("id", lot_id);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/competition/${competition_id}`);
+}
+
+/**
+ * Issue 42 — The lot's per-round PATTERN: for a round, the role it plays (fish or
+ * control) and the sector (a competition-level label). Both roles carry a sector.
+ * The fish/control inversion of a phase (issue 18/31) is just different roles per
+ * round. Upserts so re-setting a lot's role in a round overwrites it.
  */
 export async function addEntry(formData: FormData) {
   const supabase = await createSupabaseServerClient();
@@ -318,19 +463,11 @@ export async function addEntry(formData: FormData) {
   const lot_id = String(formData.get("lot_id") ?? "");
   const role = String(formData.get("role") ?? "fish") === "control" ? "control" : "fish";
   const sector_id = String(formData.get("sector_id") ?? "") || null;
-  const controls_lot_id = String(formData.get("controls_lot_id") ?? "") || null;
   if (!round_id || !lot_id) throw new Error("Round and lot required.");
-  if (role === "fish" && !sector_id) throw new Error("A fishing entry needs a sector.");
-  if (role === "control" && !controls_lot_id) {
-    throw new Error("A control entry needs the controlled lot.");
-  }
-  const { error } = await supabase.from("round_entry").insert({
-    round_id,
-    lot_id,
-    role,
-    sector_id: role === "fish" ? sector_id : null,
-    controls_lot_id: role === "control" ? controls_lot_id : null,
-  });
+  if (!sector_id) throw new Error("An entry needs a sector.");
+  const { error } = await supabase
+    .from("round_entry")
+    .upsert({ round_id, lot_id, role, sector_id }, { onConflict: "round_id,lot_id" });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/round/${round_id}`);
 }
@@ -352,6 +489,48 @@ export async function createPair(formData: FormData) {
 }
 
 /**
+ * Issue 44 — Defines a full pair in a single submit. Each member is either an
+ * existing roster angler (`<n>_id`) or a new one to create on the spot
+ * (`<n>_name` + `<n>_license`). New anglers are inserted first, then the pair —
+ * so the organizer no longer registers anglers one-by-one before forming the pair.
+ */
+export async function createPairFull(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const name = String(formData.get("name") ?? "").trim() || null;
+  if (!competition_id) throw new Error("Competition required.");
+
+  // Resolves one member: an existing angler id, or creates a new angler and returns its id.
+  const resolveMember = async (prefix: string): Promise<string> => {
+    const existingId = String(formData.get(`${prefix}_id`) ?? "").trim();
+    if (existingId) return existingId;
+    const memberName = String(formData.get(`${prefix}_name`) ?? "").trim();
+    const license_number = String(formData.get(`${prefix}_license`) ?? "").trim();
+    const federation_number = String(formData.get(`${prefix}_federation`) ?? "").trim() || null;
+    const phone = String(formData.get(`${prefix}_phone`) ?? "").trim() || null;
+    if (!memberName) throw new Error("Each angler needs a name.");
+    if (!license_number) throw new Error("Each angler needs a license number.");
+    const { data, error } = await supabase
+      .from("angler")
+      .insert({ competition_id, name: memberName, license_number, federation_number, phone })
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    return data!.id;
+  };
+
+  const angler1_id = await resolveMember("angler1");
+  const angler2_id = await resolveMember("angler2");
+  if (angler1_id === angler2_id) throw new Error("A pair is two distinct anglers.");
+
+  const { error } = await supabase
+    .from("pair")
+    .insert({ competition_id, angler1_id, angler2_id, name });
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/competition/${competition_id}`);
+}
+
+/**
  * Slice 03 — Manual entry of a scorecard with its catches. The rules engine
  * (scoreScorecard) computes points and totals; being a manual organizers' entry,
  * the scorecard becomes 'confirmed'. Sizes come as a comma-separated list.
@@ -360,6 +539,7 @@ export async function createScorecard(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
   const entry_id = String(formData.get("entry_id") ?? "");
+  const angler_id = String(formData.get("angler_id") ?? "") || null;
   const sizesRaw = String(formData.get("sizes") ?? "");
   if (!round_id || !entry_id) throw new Error("Round and entry required.");
 
@@ -386,6 +566,7 @@ export async function createScorecard(formData: FormData) {
     .insert({
       round_id,
       entry_id,
+      angler_id,
       status: "confirmed",
       total_legal_catches: r.legalCatches,
       total_undersized: r.undersizedCatches,
@@ -429,20 +610,19 @@ export async function createScorecard(formData: FormData) {
 }
 
 /**
- * Issue 23 — Manual scorecard entry in the real plica format: measures
- * (size → quantity) + an undersized count, with the angler (lot) and controller
- * picked in the same form. The roster entry is created on the fly if missing, so
- * the Plicas list populates without a separate prior registration (issue 21).
+ * Issue 23/42 — Manual scorecard entry in the real plica format: measures
+ * (size → quantity) + an undersized count, attached to a predefined lot pattern
+ * (entry) for the round and attributed to the member who turned in the plica
+ * (angler_id) — essential in pairs, where one lot is shared by both members.
  */
 export async function createScorecardManual(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
-  const lot_id = String(formData.get("lot_id") ?? "");
-  const sector_id = String(formData.get("sector_id") ?? "");
-  const controls_lot_id = String(formData.get("controls_lot_id") ?? "") || null;
+  const entry_id = String(formData.get("entry_id") ?? "");
+  const angler_id = String(formData.get("angler_id") ?? "") || null;
   const measuresRaw = String(formData.get("measures") ?? "");
   const undersized = Number(String(formData.get("undersized") ?? "0").trim() || "0");
-  if (!round_id || !lot_id || !sector_id) throw new Error("Round, lot and sector required.");
+  if (!round_id || !entry_id) throw new Error("Round and entry required.");
 
   // A final round is immutable (RF-11).
   const { data: roundStatus } = await supabase
@@ -456,30 +636,12 @@ export async function createScorecardManual(formData: FormData) {
   const catches = expandMeasures(parseMeasureLines(measuresRaw), Math.trunc(undersized), config);
   const r = scoreScorecard(catches, config);
 
-  // Find-or-create the roster entry for this lot in this round.
-  const { data: existing } = await supabase
-    .from("round_entry")
-    .select("id")
-    .eq("round_id", round_id)
-    .eq("lot_id", lot_id)
-    .maybeSingle();
-
-  let entry_id = existing?.id as string | undefined;
-  if (!entry_id) {
-    const { data: created, error: eEntry } = await supabase
-      .from("round_entry")
-      .insert({ round_id, lot_id, role: "fish", sector_id, controls_lot_id })
-      .select("id")
-      .single();
-    if (eEntry || !created) throw new Error(eEntry?.message ?? "Could not create the entry.");
-    entry_id = created.id;
-  }
-
   const { data: scorecard, error } = await supabase
     .from("scorecard")
     .insert({
       round_id,
       entry_id,
+      angler_id,
       status: "confirmed",
       total_legal_catches: r.legalCatches,
       total_undersized: r.undersizedCatches,
@@ -771,6 +933,7 @@ export async function processScorecardReading(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
   const entry_id = String(formData.get("entry_id") ?? "");
+  const angler_id = String(formData.get("angler_id") ?? "") || null;
   if (!round_id || !entry_id) throw new Error("Round and entry required.");
 
   const reading = await resolveReader().read({ image: new Uint8Array(), mimeType: "image/jpeg" });
@@ -802,6 +965,7 @@ export async function processScorecardReading(formData: FormData) {
     .insert({
       round_id,
       entry_id,
+      angler_id,
       status: result.status, // 'auto' | 'flagged'
       total_legal_catches: reading.totals.legalCatches,
       total_undersized: reading.totals.undersizedCatches,

@@ -78,37 +78,44 @@ export interface Pair {
   angler2_id: string;
 }
 
+/**
+ * A sector: a competition-level reusable label (issue 41). The name may be a single
+ * stretch ("A") or a composite the pair self-organizes within ("17/18/19").
+ */
 export interface Sector {
   id: string;
   competition_id: string;
-  round_id: string;
   name: string;
 }
 
-/** A lot: the number drawn in the sorteo, scoped to a competition (issue 20). */
+/**
+ * A lot (issue 20/42): the number drawn in the sorteo, scoped to a competition. Its
+ * per-round pattern (fish/control + sector) lives in `round_entry`. The draw assigns
+ * it to an angler (individual) or a pair (pairs, one lot per pair, issue 43); both
+ * are null until the draw.
+ */
 export interface Lot {
   id: string;
   competition_id: string;
   number: number;
-  angler_id: string;
+  angler_id: string | null;
+  pair_id: string | null;
 }
 
-/**
- * A lot's participation in a round (issue 20): the sector it fishes and the lot it
- * controls. Derived from the lot — there is no loose bib anymore.
- */
-/** A lot's per-round role: it fishes a sector or controls another lot (issue 35). */
+/** A lot's per-round role: it fishes a sector or controls a sector (issue 42). */
 export type RoundRole = "fish" | "control";
 
+/**
+ * The lot's per-round pattern (issue 42): for each round, the role it plays and the
+ * sector it fishes/controls. Both roles carry a sector now.
+ */
 export interface RoundEntry {
   id: string;
   competition_id: string;
   round_id: string;
   lot_id: string;
   role: RoundRole;
-  /** Sector fished — set on `fish` rows, null on `control` rows. */
-  sector_id: string | null;
-  controls_lot_id: string | null;
+  sector_id: string;
 }
 
 export interface Scorecard {
@@ -116,6 +123,12 @@ export interface Scorecard {
   competition_id: string;
   round_id: string;
   entry_id: string;
+  /**
+   * The member who turned in this plica (issue 42/43). In an individual competition
+   * it equals the lot's drawn angler; in pairs it is the specific member, so the two
+   * members' results sum (FEPyC). Null when not yet attributed.
+   */
+  angler_id: string | null;
   status: ScorecardStatus;
   total_legal_catches: number | null;
   total_undersized: number | null;

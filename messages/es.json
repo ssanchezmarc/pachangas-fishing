@@ -40,7 +40,8 @@
     "noCompetitions": "Todavía no hay competiciones.",
     "noConnectionTitle": "Sin conexión a la base de datos.",
     "noConnectionBody": "Configura Supabase (ver .env.example) y aplica las migraciones.",
-    "organizersAccess": "Acceso organizadores →"
+    "organizersAccess": "Acceso organizadores →",
+    "dateRange": "de {from} a {to}"
   },
   "competition": {
     "backHome": "← Competiciones",
@@ -79,7 +80,8 @@
     "email": "Email",
     "password": "Contraseña",
     "signIn": "Entrar",
-    "signingIn": "Entrando…"
+    "signingIn": "Entrando…",
+    "inviteError": "No se pudo validar la invitación (puede haber caducado). Pide que te la reenvíen."
   },
   "admin": {
     "title": "Organizadores",
@@ -120,7 +122,12 @@
     "competitions": "Competiciones",
     "noCompetitions": "Todavía no hay competiciones.",
     "newCompetition": "Nueva competición",
-    "create": "Crear"
+    "create": "Crear",
+    "organizers": "Organizadores",
+    "organizersHelp": "Añade organizadores por email: si la cuenta existe se enlaza al club; si no, se envía una invitación.",
+    "organizerEmail": "Email del organizador",
+    "inviteOrganizer": "Añadir / invitar",
+    "removeOrganizer": "Quitar"
   },
   "adminCompetition": {
     "back": "← Club",
@@ -135,7 +142,7 @@
     "lifecycleHelp": "borrador y cerrada se ocultan al público; las transiciones son libres.",
     "changeStatus": "Cambiar estado",
     "rounds": "Mangas",
-    "phasesHelp": "Asigna las mangas a una fase (mismo número = misma fase, se muestra como Fase A, B…) para la clasificación conjunta.",
+    "phasesHelp": "Asigna las mangas a una fase (mismo número = misma fase, se muestra como Fase A, B…). Varias mangas con la misma fase se clasifican en conjunto: sus resultados se agregan en una clasificación combinada de esa fase.",
     "phase": "Fase",
     "setPhase": "Asignar fase",
     "noRounds": "Todavía no hay mangas.",
@@ -159,7 +166,19 @@
     "manageRound": "Gestionar manga →",
     "deleteCompetition": "Borrar competición",
     "deleteCompetitionHelp": "Borra esta competición y, en cascada, todas sus mangas, lotes, parejas, plicas, fotos y reclamaciones. No se puede deshacer.",
-    "confirmDeleteCompetition": "Confirmo que quiero borrar esta competición y todos sus datos"
+    "confirmDeleteCompetition": "Confirmo que quiero borrar esta competición y todos sus datos",
+    "pairFromRoster": "Del censo",
+    "pairNewAngler": "Nuevo pescador",
+    "sectors": "Sectores",
+    "sectorsHelp": "Catálogo de sectores de la competición (etiquetas reutilizables; pueden ser compuestas como \"17/18/19\").",
+    "noSectors": "Aún no hay sectores.",
+    "sectorName": "Nombre del sector",
+    "addSector": "Añadir sector",
+    "lotsHelp": "Define los números de lote; luego el sorteo asigna cada lote a un pescador (individual) o a una pareja (parejas). El patrón por manga (pesca/control + sector) se define en cada manga.",
+    "thPair": "Pareja",
+    "thDraw": "Sorteo",
+    "unassigned": "— sin asignar —",
+    "draw": "Asignar"
   },
   "adminRound": {
     "organizers": "← Organizadores",
@@ -232,7 +251,13 @@
     "whatsappOn": "recibiendo",
     "whatsappOff": "sin recibir",
     "whatsappActivate": "Recibir fotos aquí",
-    "whatsappDeactivate": "Dejar de recibir"
+    "whatsappDeactivate": "Dejar de recibir",
+    "pairLot": "pareja",
+    "undrawn": "sin sortear",
+    "sectorsManagedHelp": "Los sectores se gestionan en la competición (catálogo reutilizable).",
+    "noSectorsRound": "No hay sectores definidos en la competición.",
+    "entryPlaceholder": "— lote / patrón —",
+    "memberPlaceholder": "— pescador —"
   },
   "scorecard": {
     "backRound": "← Manga",
@@ -271,6 +296,15 @@
     "lotNotInRoster": "El lote {lot} no figura en el censo de la manga.",
     "lowLotConfidence": "Confianza del lote baja ({value}).",
     "lowCatchesConfidence": "Confianza de las piezas baja ({value}).",
-    "lowTotalsConfidence": "Confianza de los totales baja ({value})."
+    "lowTotalsConfidence": "Confianza de los totales baja ({value}).",
+    "memberUnresolved": "Lote {lot}: no se pudo identificar a qué pescador de la pareja pertenece esta plica; asígnalo manualmente."
+  },
+  "accept": {
+    "title": "Completa tu acceso",
+    "subtitle": "Establece una contraseña para {email} y empieza a organizar.",
+    "subtitleNoSession": "Abre el enlace del email de invitación para continuar.",
+    "password": "Nueva contraseña",
+    "save": "Guardar y entrar",
+    "saving": "Guardando…"
   }
 }

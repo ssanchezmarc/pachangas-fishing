@@ -39,14 +39,27 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
       <h2>{t("home.competitionsHeading")}</h2>
       {competitions.length === 0 && !error && <p className="muted">{t("home.noCompetitions")}</p>}
-      {competitions.map((c) => (
-        <Link key={c.id} href={`/competition/${c.id}`} className="card" style={{ display: "block" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <strong>{c.name}</strong>
-            <span className="muted">{t(`admin.type.${c.type}`)}</span>
-          </div>
-        </Link>
-      ))}
+      {competitions.map((c) => {
+        const dateRange =
+          c.dateStart && c.dateEnd
+            ? c.dateStart === c.dateEnd
+              ? c.dateStart
+              : t("home.dateRange", { from: c.dateStart, to: c.dateEnd })
+            : null;
+        return (
+          <Link key={c.id} href={`/competition/${c.id}`} className="card" style={{ display: "block" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong>{c.name}</strong>
+              <span className="muted">{t(`admin.type.${c.type}`)}</span>
+            </div>
+            <div className="muted" style={{ marginTop: "0.25rem" }}>
+              {c.clubName && <span>{c.clubName}</span>}
+              {c.clubName && dateRange && <span> · </span>}
+              {dateRange && <span>{dateRange}</span>}
+            </div>
+          </Link>
+        );
+      })}
 
       <p className="muted" style={{ marginTop: "2rem" }}>
         <Link href="/admin">{t("home.organizersAccess")}</Link>

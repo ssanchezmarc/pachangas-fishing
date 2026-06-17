@@ -2,11 +2,11 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createRound, createLot, assignPairLot, createAngler, transitionCompetition, setRoundGroup, deleteCompetition } from "../../actions";
+import { createRound, createLot, createSector, assignLotAngler, assignLotPair, createAngler, transitionCompetition, setRoundGroup, deleteCompetition } from "../../actions";
 import { COMPETITION_STATUSES } from "@/domain/competition-status";
 import { phaseLabel } from "@/domain/phases";
 import { PairForm } from "@/components/PairForm";
-import type { Competition, Round, Lot, Pair, Angler } from "@/lib/supabase/types";
+import type { Competition, Round, Lot, Pair, Angler, Sector } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
 
@@ -31,18 +31,23 @@ export default async function AdminCompetitionPage({
   if (!competition) notFound();
   const c = competition as Competition;
 
-  const [{ data: rounds }, { data: lots }, { data: pairs }, { data: anglers }] = await Promise.all([
+  const [{ data: rounds }, { data: lots }, { data: pairs }, { data: anglers }, { data: sectors }] = await Promise.all([
     supabase.from("round").select("*").eq("competition_id", id).order("date"),
     supabase.from("lot").select("*").eq("competition_id", id).order("number"),
     supabase.from("pair").select("*").eq("competition_id", id),
     supabase.from("angler").select("*").eq("competition_id", id).order("name"),
+    supabase.from("sector").select("*").eq("competition_id", id).order("name"),
   ]);
 
   const roundList = (rounds ?? []) as Round[];
   const lotList = (lots ?? []) as Lot[];
   const pairList = (pairs ?? []) as Pair[];
   const anglerList = (anglers ?? []) as Angler[];
+  const sectorList = (sectors ?? []) as Sector[];
   const anglerName = new Map(anglerList.map((a) => [a.id, a.name]));
+  const pairName = (p: Pair) =>
+    p.name ?? `${anglerName.get(p.angler1_id) ?? "?"} / ${anglerName.get(p.angler2_id) ?? "?"}`;
+  const pairLabelById = new Map(pairList.map((p) => [p.id, pairName(p)]));
 
   return (
     <main className="container">
@@ -147,72 +152,95 @@ export default async function AdminCompetitionPage({
         </form>
       </section>
 
+      {/* Issue 41 — Sectors: a competition-level reusable catalog (labels). */}
+      <section className="card">
+        <h2>{t("sectors")}</h2>
+        <p className="muted">{t("sectorsHelp")}</p>
+        <div style={{ marginBottom: "0.5rem" }}>
+          {sectorList.length === 0 && <span className="muted">{t("noSectors")}</span>}
+          {sectorList.map((s) => (
+            <span key={s.id} className="badge open" style={{ marginRight: 6 }}>
+              {s.name}
+            </span>
+          ))}
+        </div>
+        <form action={createSector} style={{ display: "flex", gap: "0.5rem" }}>
+          <input type="hidden" name="competition_id" value={id} />
+          <input name="name" placeholder={t("sectorName")} required />
+          <button className="primary" type="submit">
+            {t("addSector")}
+          </button>
+        </form>
+      </section>
+
+      {/* Issue 42/43 — Lots: define the numbers, then the draw assigns each to an
+          angler (individual) or a pair (pairs). The per-round pattern (fish/control
+          + sector) is set per round on the round page. */}
       <section className="card">
         <h2>{t("lots")}</h2>
+        <p className="muted">{t("lotsHelp")}</p>
         {lotList.length === 0 && <p className="muted">{t("noLots")}</p>}
         {lotList.length > 0 && (
           <table>
             <thead>
               <tr>
                 <th>{t("thLot")}</th>
-                <th>{t("thAngler")}</th>
+                <th>{c.type === "pairs" ? t("thPair") : t("thAngler")}</th>
+                <th>{t("thDraw")}</th>
               </tr>
             </thead>
             <tbody>
               {lotList.map((l) => (
                 <tr key={l.id}>
                   <td>#{l.number}</td>
-                  <td>{anglerName.get(l.angler_id) ?? "?"}</td>
+                  <td>
+                    {c.type === "pairs"
+                      ? (l.pair_id ? pairLabelById.get(l.pair_id) ?? "?" : <span className="muted">{t("unassigned")}</span>)
+                      : (l.angler_id ? anglerName.get(l.angler_id) ?? "?" : <span className="muted">{t("unassigned")}</span>)}
+                  </td>
+                  <td>
+                    {c.type === "pairs" ? (
+                      <form action={assignLotPair} style={{ display: "flex", gap: "0.35rem" }}>
+                        <input type="hidden" name="competition_id" value={id} />
+                        <input type="hidden" name="lot_id" value={l.id} />
+                        <select name="pair_id" defaultValue={l.pair_id ?? ""}>
+                          <option value="">{t("unassigned")}</option>
+                          {pairList.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {pairName(p)}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="tab" type="submit">{t("draw")}</button>
+                      </form>
+                    ) : (
+                      <form action={assignLotAngler} style={{ display: "flex", gap: "0.35rem" }}>
+                        <input type="hidden" name="competition_id" value={id} />
+                        <input type="hidden" name="lot_id" value={l.id} />
+                        <select name="angler_id" defaultValue={l.angler_id ?? ""}>
+                          <option value="">{t("unassigned")}</option>
+                          {anglerList.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="tab" type="submit">{t("draw")}</button>
+                      </form>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-        <form action={createLot} style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <form action={createLot} style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
           <input type="hidden" name="competition_id" value={id} />
           <input name="number" type="number" min={1} placeholder={t("lotNumber")} required style={{ width: 100 }} />
-          <select name="angler_id" required>
-            <option value="">{t("lotAngler")}</option>
-            {anglerList.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
           <button className="primary" type="submit">
             {t("createLot")}
           </button>
         </form>
-        {/* Issue 35 — in a pairs competition, assign one lot number to the pair; it
-            creates a lot per member (same number) under the hood. */}
-        {c.type === "pairs" && (
-          <form
-            action={assignPairLot}
-            style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}
-          >
-            <input type="hidden" name="competition_id" value={id} />
-            <input
-              name="number"
-              type="number"
-              min={1}
-              placeholder={t("lotNumber")}
-              required
-              style={{ width: 100 }}
-            />
-            <select name="pair_id" required>
-              <option value="">{t("lotPair")}</option>
-              {pairList.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name ??
-                    `${anglerName.get(p.angler1_id) ?? "?"} / ${anglerName.get(p.angler2_id) ?? "?"}`}
-                </option>
-              ))}
-            </select>
-            <button className="primary" type="submit">
-              {t("assignPairLot")}
-            </button>
-          </form>
-        )}
       </section>
 
       {/* Pairs management only for pairs competitions (issue 16/17). */}
@@ -233,6 +261,10 @@ export default async function AdminCompetitionPage({
               angler2: t("angler2"),
               namePlaceholder: t("pairNamePlaceholder"),
               create: t("createPair"),
+              fromRoster: t("pairFromRoster"),
+              newAngler: t("pairNewAngler"),
+              newName: t("anglerName"),
+              newLicense: t("licenseNumber"),
             }}
           />
         </section>

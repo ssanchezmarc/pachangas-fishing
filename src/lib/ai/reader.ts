@@ -47,7 +47,7 @@ export class MockReader implements ScorecardReader {
 const READING_PROMPT = `Eres un lector experto de "plicas" de papel de concursos de pesca FEPyC (liga "Alto Carrión"). Lee la foto y devuelve SOLO un JSON. NO inventes datos: si una casilla está vacía, NO es una captura.
 
 ESTRUCTURA DE LA PLICA:
-- Arriba: número de lote (manuscrito, normalmente arriba a la derecha en rojo) y datos de la manga.
+- Arriba: número de lote (manuscrito, normalmente arriba a la derecha en rojo) y datos de la manga. Si aparecen, lee también el NOMBRE del pescador y su nº de LICENCIA/federación (sirven para identificar al miembro en competiciones por parejas). Si no se ven, omítelos.
 - Cuerpo: una rejilla de casillas numeradas (1, 2, 3, …). CADA casilla es una posible pieza y contiene la etiqueta "Talla:" y DOS filas de dígitos 0-9 (fila de decenas y fila de unidades).
 - UNA CASILLA SOLO CUENTA COMO CAPTURA SI tiene dígitos REALMENTE marcados/rodeados (un círculo o marca clara sobre un número de cada fila) Y/O una talla escrita a mano en "Talla:". Una casilla en blanco, o con una raya/aspa diagonal que la cruza (anulación), NO es una captura: ignórala.
 - Pie de la plica (datos AUTORITATIVOS, úsalos como checksum y para los totales):
@@ -61,9 +61,11 @@ REGLAS:
 - No rellenes capturas para que "cuadre"; prefiere reflejar lo que realmente ves.
 - Mira con MUCHA atención los números manuscritos del pie en "TOTAL CAPTURAS TALLA" y "TOTAL CAPTURAS MENORES TALLA" (suele ser un único dígito; un círculo grande es un "0"). Para "undersizedCatches", cuenta además las aspas (X) tachadas en la fila inferior "CAPTURAS MENORES TALLA" (cada aspa = una pieza menor).
 
-Devuelve EXACTAMENTE esta forma:
+Devuelve EXACTAMENTE esta forma ("anglerName" y "license" son OPCIONALES; inclúyelos solo si los lees):
 {
   "lot": string,
+  "anglerName": string,
+  "license": string,
   "catches": [ { "tens": number, "units": number, "handwrittenSize": number } ],
   "totals": { "legalCatches": number, "undersizedCatches": number, "biggestCatchCm": number },
   "confidence": { "lot": number, "catches": number, "totals": number }

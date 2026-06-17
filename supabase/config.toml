@@ -13,6 +13,16 @@ port = 54323
 enabled = true
 # Only the committee has a login (Supabase Auth). Participants and controllers do not.
 site_url = "http://localhost:3000"
+# Issue 36/37 — the invitation email link lands on the auth callback. Every redirect
+# target must be allow-listed (cloud: add the prod URL in the dashboard too).
+additional_redirect_urls = ["http://localhost:3000/api/auth/confirm"]
+
+[auth.email]
+# Local dev captures outbound mail in Inbucket (http://localhost:54324).
+# In production, configure custom SMTP — the default Supabase mailer is rate-limited
+# (~3-4/hour) and not meant for real invitations.
+enable_signup = true
+enable_confirmations = true
 
 [storage]
 enabled = true

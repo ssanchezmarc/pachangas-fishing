@@ -34,6 +34,14 @@ export const readConfidenceSchema = z.object({
 
 export const scorecardReadingSchema = z.object({
   lot: z.string().min(1),
+  /**
+   * Angler identity read off the plica (issue 42): used to attribute the plica to a
+   * member in pairs, where one lot is shared by both. Optional — absent on plicas
+   * that only carry a lot number, or in individual competitions where the lot maps
+   * to a single angler.
+   */
+  anglerName: z.string().optional(),
+  license: z.string().optional(),
   catches: z.array(readCatchSchema),
   totals: scorecardTotalsSchema,
   confidence: readConfidenceSchema,

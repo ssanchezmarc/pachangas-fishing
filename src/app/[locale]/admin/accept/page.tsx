@@ -1,35 +1,32 @@
 "use client";
-import { Suspense, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-export default function LoginPage() {
-  // useSearchParams must sit under a Suspense boundary for static prerendering.
-  return (
-    <Suspense>
-      <LoginForm />
-    </Suspense>
-  );
-}
-
-function LoginForm() {
-  const t = useTranslations("login");
+/**
+ * Issue 36 — An invited organizer lands here (after /api/auth/confirm set their
+ * session) to set a password on first access. Once set, they are a normal organizer.
+ */
+export default function AcceptInvitePage() {
+  const t = useTranslations("accept");
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const inviteError = searchParams.get("error") === "invite";
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const supabase = createSupabaseBrowserClient();
+    supabase.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null));
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
     const supabase = createSupabaseBrowserClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.updateUser({ password });
     setLoading(false);
     if (error) {
       setError(error.message);
@@ -42,23 +39,8 @@ function LoginForm() {
   return (
     <main className="container" style={{ maxWidth: 420 }}>
       <h1>{t("title")}</h1>
-      <p className="muted">{t("subtitle")}</p>
-      {inviteError && (
-        <div className="card" style={{ borderColor: "#ff9a9a" }}>
-          <p style={{ color: "#ff9a9a", margin: 0 }}>{t("inviteError")}</p>
-        </div>
-      )}
+      <p className="muted">{email ? t("subtitle", { email }) : t("subtitleNoSession")}</p>
       <form onSubmit={onSubmit} className="card" style={{ display: "grid", gap: "0.75rem" }}>
-        <label>
-          {t("email")}
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            style={{ width: "100%" }}
-          />
-        </label>
         <label>
           {t("password")}
           <input
@@ -66,12 +48,13 @@ function LoginForm() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
+            minLength={6}
             style={{ width: "100%" }}
           />
         </label>
         {error && <p style={{ color: "#ff9a9a" }}>{error}</p>}
-        <button className="primary" type="submit" disabled={loading}>
-          {loading ? t("signingIn") : t("signIn")}
+        <button className="primary" type="submit" disabled={loading || !email}>
+          {loading ? t("saving") : t("save")}
         </button>
       </form>
     </main>

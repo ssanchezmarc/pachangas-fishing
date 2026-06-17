@@ -40,7 +40,8 @@
     "noCompetitions": "No competitions yet.",
     "noConnectionTitle": "No database connection.",
     "noConnectionBody": "Configure Supabase (see .env.example) and apply the migrations.",
-    "organizersAccess": "Organizers access →"
+    "organizersAccess": "Organizers access →",
+    "dateRange": "{from} to {to}"
   },
   "competition": {
     "backHome": "← Competitions",
@@ -79,7 +80,8 @@
     "email": "Email",
     "password": "Password",
     "signIn": "Sign in",
-    "signingIn": "Signing in…"
+    "signingIn": "Signing in…",
+    "inviteError": "We couldn't validate the invitation (it may have expired). Ask for a new one."
   },
   "admin": {
     "title": "Organizers",
@@ -120,7 +122,12 @@
     "competitions": "Competitions",
     "noCompetitions": "No competitions yet.",
     "newCompetition": "New competition",
-    "create": "Create"
+    "create": "Create",
+    "organizers": "Organizers",
+    "organizersHelp": "Add organizers by email: existing accounts are linked to the club; otherwise an invitation is sent.",
+    "organizerEmail": "Organizer email",
+    "inviteOrganizer": "Add / invite",
+    "removeOrganizer": "Remove"
   },
   "adminCompetition": {
     "back": "← Club",
@@ -135,7 +142,7 @@
     "lifecycleHelp": "draft and closed are hidden from the public; transitions are free.",
     "changeStatus": "Change status",
     "rounds": "Rounds",
-    "phasesHelp": "Assign rounds to a phase (same number = same phase, shown as Phase A, B…) for the combined standings.",
+    "phasesHelp": "Assign rounds to a phase (same number = same phase, shown as Phase A, B…). Several rounds sharing the same phase are ranked together: their results are aggregated into one combined standing for that phase.",
     "phase": "Phase",
     "setPhase": "Set phase",
     "noRounds": "No rounds yet.",
@@ -159,7 +166,19 @@
     "manageRound": "Manage round →",
     "deleteCompetition": "Delete competition",
     "deleteCompetitionHelp": "Deletes this competition and, in cascade, all its rounds, lots, pairs, scorecards, photos and claims. This cannot be undone.",
-    "confirmDeleteCompetition": "I confirm I want to delete this competition and all its data"
+    "confirmDeleteCompetition": "I confirm I want to delete this competition and all its data",
+    "pairFromRoster": "From roster",
+    "pairNewAngler": "New angler",
+    "sectors": "Sectors",
+    "sectorsHelp": "Competition sector catalog (reusable labels; may be composite like \"17/18/19\").",
+    "noSectors": "No sectors yet.",
+    "sectorName": "Sector name",
+    "addSector": "Add sector",
+    "lotsHelp": "Define the lot numbers; the draw then assigns each lot to an angler (individual) or a pair (pairs). The per-round pattern (fish/control + sector) is set on each round.",
+    "thPair": "Pair",
+    "thDraw": "Draw",
+    "unassigned": "— unassigned —",
+    "draw": "Assign"
   },
   "adminRound": {
     "organizers": "← Organizers",
@@ -232,7 +251,13 @@
     "whatsappOn": "receiving",
     "whatsappOff": "not receiving",
     "whatsappActivate": "Receive photos here",
-    "whatsappDeactivate": "Stop receiving"
+    "whatsappDeactivate": "Stop receiving",
+    "pairLot": "pair",
+    "undrawn": "undrawn",
+    "sectorsManagedHelp": "Sectors are managed on the competition (reusable catalog).",
+    "noSectorsRound": "No sectors defined on the competition.",
+    "entryPlaceholder": "— lot / pattern —",
+    "memberPlaceholder": "— angler —"
   },
   "scorecard": {
     "backRound": "← Round",
@@ -271,6 +296,15 @@
     "lotNotInRoster": "Lot {lot} is not in the round roster.",
     "lowLotConfidence": "Low lot confidence ({value}).",
     "lowCatchesConfidence": "Low catches confidence ({value}).",
-    "lowTotalsConfidence": "Low totals confidence ({value})."
+    "lowTotalsConfidence": "Low totals confidence ({value}).",
+    "memberUnresolved": "Lot {lot}: couldn't tell which pair member this plica belongs to; assign it manually."
+  },
+  "accept": {
+    "title": "Finish your access",
+    "subtitle": "Set a password for {email} and start organizing.",
+    "subtitleNoSession": "Open the link from your invitation email to continue.",
+    "password": "New password",
+    "save": "Save and sign in",
+    "saving": "Saving…"
   }
 }
