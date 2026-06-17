@@ -67,7 +67,9 @@ export async function loadActiveRound(): Promise<ActiveRound | null> {
 
   const { data: entries } = await supabase
     .from("round_entry")
-    .select("id, lot(number)")
+    // round_entry has two FKs to lot (lot_id + controls_lot_id since 0016), so the
+    // embed must name the relationship to avoid PostgREST's ambiguity error.
+    .select("id, lot:lot!round_entry_lot_id_fkey(number)")
     .eq("round_id", round.id);
 
   const entryByLot = new Map<string, string>();

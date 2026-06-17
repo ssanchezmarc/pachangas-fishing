@@ -779,7 +779,8 @@ export async function processScorecardReading(formData: FormData) {
   // round_entry → lot join gives the lots fishing this round.
   const { data: entries } = await supabase
     .from("round_entry")
-    .select("lot(number)")
+    // Disambiguate the lot embed: round_entry has two FKs to lot since 0016.
+    .select("lot:lot!round_entry_lot_id_fkey(number)")
     .eq("round_id", round_id);
   const rosterLots = new Set(
     (entries ?? [])
