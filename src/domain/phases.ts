@@ -22,3 +22,16 @@ export function phaseLabel(index: number): string {
   }
   return label;
 }
+
+/**
+ * Issue 53 — Inverse of {@link phaseLabel}: a phase letter ("A", "B", …, "AA")
+ * back to its 1-based index. Case-insensitive, trims surrounding space. Returns
+ * `null` for empty or non-letter input (so the caller can treat it as "no phase").
+ */
+export function phaseIndex(label: string): number | null {
+  const s = label.trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(s)) return null;
+  let n = 0;
+  for (const ch of s) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n > 0 ? n : null;
+}

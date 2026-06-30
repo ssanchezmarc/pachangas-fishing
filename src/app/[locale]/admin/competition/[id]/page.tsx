@@ -1,12 +1,15 @@
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createRound, createLot, createSector, assignLotAngler, assignLotPair, createAngler, transitionCompetition, setRoundGroup, deleteCompetition } from "../../actions";
+import { createRound, createLot, createSector, updateSector, deleteSector, assignLotAngler, assignLotPair, addEntry, createAngler, transitionCompetition, toggleCompetitionVisibility, setRoundGroup, deleteCompetition } from "../../actions";
 import { COMPETITION_STATUSES } from "@/domain/competition-status";
 import { phaseLabel } from "@/domain/phases";
+import { sectorLabel } from "@/domain/sector";
 import { PairForm } from "@/components/PairForm";
-import type { Competition, Round, Lot, Pair, Angler, Sector } from "@/lib/supabase/types";
+import { SubmitButton } from "@/components/SubmitButton";
+import type { Competition, Round, Lot, Pair, Angler, Sector, RoundEntry } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
 
@@ -31,12 +34,13 @@ export default async function AdminCompetitionPage({
   if (!competition) notFound();
   const c = competition as Competition;
 
-  const [{ data: rounds }, { data: lots }, { data: pairs }, { data: anglers }, { data: sectors }] = await Promise.all([
+  const [{ data: rounds }, { data: lots }, { data: pairs }, { data: anglers }, { data: sectors }, { data: entries }] = await Promise.all([
     supabase.from("round").select("*").eq("competition_id", id).order("date"),
     supabase.from("lot").select("*").eq("competition_id", id).order("number"),
     supabase.from("pair").select("*").eq("competition_id", id),
     supabase.from("angler").select("*").eq("competition_id", id).order("name"),
     supabase.from("sector").select("*").eq("competition_id", id).order("name"),
+    supabase.from("round_entry").select("*").eq("competition_id", id),
   ]);
 
   const roundList = (rounds ?? []) as Round[];
@@ -44,10 +48,23 @@ export default async function AdminCompetitionPage({
   const pairList = (pairs ?? []) as Pair[];
   const anglerList = (anglers ?? []) as Angler[];
   const sectorList = (sectors ?? []) as Sector[];
+  // Issue 50 — pre-fill river/venue on the create form from the last sector (they
+  // usually repeat within a competition).
+  const lastSector = sectorList[sectorList.length - 1];
+  // Issue 51 — the lot's per-round pattern, indexed by round+lot for the matrix.
+  const entryList = (entries ?? []) as RoundEntry[];
+  const entryByCell = new Map(entryList.map((e) => [`${e.round_id}:${e.lot_id}`, e]));
   const anglerName = new Map(anglerList.map((a) => [a.id, a.name]));
   const pairName = (p: Pair) =>
     p.name ?? `${anglerName.get(p.angler1_id) ?? "?"} / ${anglerName.get(p.angler2_id) ?? "?"}`;
   const pairLabelById = new Map(pairList.map((p) => [p.id, pairName(p)]));
+
+  // Issue 45 — absolute /c/{code} link to share a private competition.
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "";
+  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  const shareLink = c.access_code ? `${proto}://${host}/c/${c.access_code}` : null;
+  const isPrivate = c.visibility === "private";
 
   return (
     <main className="container">
@@ -75,10 +92,39 @@ export default async function AdminCompetitionPage({
               </option>
             ))}
           </select>
-          <button className="primary" type="submit">
-            {t("changeStatus")}
-          </button>
+          <SubmitButton pendingLabel={t("working")}>{t("changeStatus")}</SubmitButton>
         </form>
+      </section>
+
+      {/* Issue 45 — visibility: public (listed on the home) or private (hidden,
+          reached with the access code below). */}
+      <section className="card">
+        <h2>{t("visibility")}</h2>
+        <p>
+          <span className={`badge ${isPrivate ? "" : "open"}`}>
+            {isPrivate ? t("visibilityPrivate") : t("visibilityPublic")}
+          </span>{" "}
+          <span className="muted">· {t("visibilityHelp")}</span>
+        </p>
+        <form action={toggleCompetitionVisibility} style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <input type="hidden" name="competition_id" value={id} />
+          <input type="hidden" name="to" value={isPrivate ? "public" : "private"} />
+          <SubmitButton className="tab" pendingLabel={t("working")}>
+            {isPrivate ? t("makePublic") : t("makePrivate")}
+          </SubmitButton>
+        </form>
+        {isPrivate && c.access_code && (
+          <div style={{ marginTop: "0.75rem" }}>
+            <div>
+              {t("accessCode")}: <code>{c.access_code}</code>
+            </div>
+            {shareLink && (
+              <div className="muted" style={{ marginTop: "0.25rem", wordBreak: "break-all" }}>
+                {t("accessLink")}: <code>{shareLink}</code>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="card">
@@ -101,16 +147,14 @@ export default async function AdminCompetitionPage({
               <label className="muted" style={{ fontSize: "0.8rem" }}>
                 {t("phase")}
                 <input
-                  name="group_index"
-                  type="number"
-                  min={1}
-                  defaultValue={r.group_index ?? ""}
+                  name="phase"
+                  maxLength={3}
+                  placeholder="A"
+                  defaultValue={r.group_index ? phaseLabel(r.group_index) : ""}
                   style={{ width: 56, marginLeft: 4 }}
                 />
               </label>
-              <button className="tab" type="submit">
-                {t("setPhase")}
-              </button>
+              <SubmitButton className="tab" pendingLabel={t("working")}>{t("setPhase")}</SubmitButton>
             </form>
           </div>
         ))}
@@ -121,15 +165,15 @@ export default async function AdminCompetitionPage({
             <input name="date" type="date" required />
             <input name="start_time" type="time" />
             <input name="end_time" type="time" />
-            <input name="group_index" type="number" min={1} placeholder={t("phase")} style={{ width: 90 }} />
+            <input name="phase" maxLength={3} placeholder={t("phase")} style={{ width: 90 }} />
           </div>
-          <button className="primary" type="submit">
-            {t("createRound")}
-          </button>
+          <SubmitButton pendingLabel={t("working")}>{t("createRound")}</SubmitButton>
         </form>
       </section>
 
-      {/* Issue 30 — the angler roster lives inside the competition. */}
+      {/* Issue 30/52 — angler roster (individual competitions only; in pairs the
+          anglers are created within the pair form). */}
+      {c.type === "individual" && (
       <section className="card">
         <h2>{t("anglers")}</h2>
         <div className="muted">{t("anglersCount", { count: anglerList.length })}</div>
@@ -146,30 +190,41 @@ export default async function AdminCompetitionPage({
             <input name="federation_number" placeholder={t("federationNumber")} />
             <input name="phone" type="tel" placeholder={t("phone")} />
           </div>
-          <button className="primary" type="submit">
-            {t("addAngler")}
-          </button>
+          <SubmitButton pendingLabel={t("working")}>{t("addAngler")}</SubmitButton>
         </form>
       </section>
+      )}
 
       {/* Issue 41 — Sectors: a competition-level reusable catalog (labels). */}
       <section className="card">
         <h2>{t("sectors")}</h2>
         <p className="muted">{t("sectorsHelp")}</p>
-        <div style={{ marginBottom: "0.5rem" }}>
-          {sectorList.length === 0 && <span className="muted">{t("noSectors")}</span>}
-          {sectorList.map((s) => (
-            <span key={s.id} className="badge open" style={{ marginRight: 6 }}>
-              {s.name}
-            </span>
-          ))}
-        </div>
-        <form action={createSector} style={{ display: "flex", gap: "0.5rem" }}>
+        {sectorList.length === 0 && <p className="muted">{t("noSectors")}</p>}
+        {sectorList.map((s) => (
+          <div key={s.id} style={{ display: "flex", gap: "0.4rem", alignItems: "center", marginBottom: "0.4rem", flexWrap: "wrap" }}>
+            <form action={updateSector} style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+              <input type="hidden" name="competition_id" value={id} />
+              <input type="hidden" name="sector_id" value={s.id} />
+              <input name="river" defaultValue={s.river} placeholder={t("river")} style={{ width: 110 }} />
+              <input name="venue" defaultValue={s.venue} placeholder={t("venue")} style={{ width: 130 }} />
+              <input name="name" defaultValue={s.name} placeholder={t("sectorName")} required style={{ width: 110 }} />
+              <SubmitButton className="tab" pendingLabel={t("working")}>{t("saveSector")}</SubmitButton>
+            </form>
+            <form action={deleteSector}>
+              <input type="hidden" name="competition_id" value={id} />
+              <input type="hidden" name="sector_id" value={s.id} />
+              <SubmitButton className="tab" pendingLabel={t("working")} style={{ color: "var(--danger, #c0392b)" }}>
+                {t("deleteSector")}
+              </SubmitButton>
+            </form>
+          </div>
+        ))}
+        <form action={createSector} style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
           <input type="hidden" name="competition_id" value={id} />
-          <input name="name" placeholder={t("sectorName")} required />
-          <button className="primary" type="submit">
-            {t("addSector")}
-          </button>
+          <input name="river" placeholder={t("river")} defaultValue={lastSector?.river ?? ""} style={{ width: 110 }} />
+          <input name="venue" placeholder={t("venue")} defaultValue={lastSector?.venue ?? ""} style={{ width: 130 }} />
+          <input name="name" placeholder={t("sectorName")} required style={{ width: 110 }} />
+          <SubmitButton pendingLabel={t("working")}>{t("addSector")}</SubmitButton>
         </form>
       </section>
 
@@ -211,7 +266,7 @@ export default async function AdminCompetitionPage({
                             </option>
                           ))}
                         </select>
-                        <button className="tab" type="submit">{t("draw")}</button>
+                        <SubmitButton className="tab" pendingLabel={t("working")}>{t("draw")}</SubmitButton>
                       </form>
                     ) : (
                       <form action={assignLotAngler} style={{ display: "flex", gap: "0.35rem" }}>
@@ -225,7 +280,7 @@ export default async function AdminCompetitionPage({
                             </option>
                           ))}
                         </select>
-                        <button className="tab" type="submit">{t("draw")}</button>
+                        <SubmitButton className="tab" pendingLabel={t("working")}>{t("draw")}</SubmitButton>
                       </form>
                     )}
                   </td>
@@ -237,10 +292,65 @@ export default async function AdminCompetitionPage({
         <form action={createLot} style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
           <input type="hidden" name="competition_id" value={id} />
           <input name="number" type="number" min={1} placeholder={t("lotNumber")} required style={{ width: 100 }} />
-          <button className="primary" type="submit">
-            {t("createLot")}
-          </button>
+          <SubmitButton pendingLabel={t("working")}>{t("createLot")}</SubmitButton>
         </form>
+      </section>
+
+      {/* Issue 51 — Rotation matrix: per lot × round, the role (fish/control) and
+          sector. Define the whole pattern in one view instead of round by round. */}
+      <section className="card">
+        <h2>{t("rotationHeading")}</h2>
+        <p className="muted">{t("rotationHelp")}</p>
+        {lotList.length === 0 || roundList.length === 0 || sectorList.length === 0 ? (
+          <p className="muted">{t("rotationNeedsData")}</p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("thLot")}</th>
+                  {roundList.map((r) => (
+                    <th key={r.id}>{r.name}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {lotList.map((l) => (
+                  <tr key={l.id}>
+                    <td>#{l.number}</td>
+                    {roundList.map((r) => {
+                      const entry = entryByCell.get(`${r.id}:${l.id}`);
+                      return (
+                        <td key={r.id}>
+                          <form action={addEntry} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            <input type="hidden" name="competition_id" value={id} />
+                            <input type="hidden" name="round_id" value={r.id} />
+                            <input type="hidden" name="lot_id" value={l.id} />
+                            <select name="role" defaultValue={entry?.role ?? "fish"}>
+                              <option value="fish">{t("roleFish")}</option>
+                              <option value="control">{t("roleControl")}</option>
+                            </select>
+                            <select name="sector_id" defaultValue={entry?.sector_id ?? ""} required>
+                              <option value="">{t("sectorPlaceholderShort")}</option>
+                              {sectorList.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {sectorLabel(s)}
+                                </option>
+                              ))}
+                            </select>
+                            <SubmitButton className="tab" pendingLabel="…">
+                              {t("rotationSave")}
+                            </SubmitButton>
+                          </form>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       {/* Pairs management only for pairs competitions (issue 16/17). */}
@@ -281,9 +391,9 @@ export default async function AdminCompetitionPage({
             <input type="checkbox" name="confirm" required style={{ marginRight: 6 }} />
             {t("confirmDeleteCompetition")}
           </label>
-          <button className="tab" type="submit" style={{ color: "var(--danger, #c0392b)", width: "fit-content" }}>
+          <SubmitButton className="tab" pendingLabel={t("working")} style={{ color: "var(--danger, #c0392b)", width: "fit-content" }}>
             {t("deleteCompetition")}
-          </button>
+          </SubmitButton>
         </form>
       </section>
     </main>

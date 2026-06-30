@@ -15,6 +15,7 @@ import type { ScoringConfig, Catch } from "@/domain/types";
 import { ALTO_CARRION_PRESET } from "@/domain/types";
 import { canTransition, allowsEditing } from "@/domain/round-status";
 import { canTransitionCompetition } from "@/domain/competition-status";
+import { phaseIndex } from "@/domain/phases";
 import { isResolution } from "@/domain/claim";
 import { expandMeasures, parseMeasureLines } from "@/domain/manual-entry";
 import type { RoundStatus, CompetitionStatus } from "@/lib/supabase/types";
@@ -31,9 +32,29 @@ async function currentUserId(): Promise<string> {
   return user.id;
 }
 
+/** Parses a free-text list of emails (comma/space/semicolon/newline separated). */
+function parseEmails(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[\s,;]+/)
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.includes("@")),
+    ),
+  );
+}
+
+/** Random short access code for a private competition (issue 45). */
+function generateAccessCode(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+}
+
 /**
- * Issue 29 — Creates a club and enrolls the current organizer as its owner
- * (club_member). The membership is what every RLS policy checks afterwards.
+ * Issue 29/47 — Creates a club, enrolls the current organizer as its owner
+ * (club_member), and optionally adds more organizers by email in the same step
+ * (issue 47): existing accounts are linked, unknown ones are invited. The
+ * membership is what every RLS policy checks afterwards. A failing email does not
+ * roll back the club; the failures are reported back.
  */
 export async function createClub(formData: FormData) {
   const supabase = await createSupabaseServerClient();
@@ -52,7 +73,41 @@ export async function createClub(formData: FormData) {
     .insert({ club_id: club.id, user_id: await currentUserId(), role: "owner" });
   if (eMember) throw new Error(eMember.message);
 
+  // Issue 47 — optional organizer emails added at creation time.
+  const emails = parseEmails(String(formData.get("emails") ?? ""));
+  const failed: string[] = [];
+  if (emails.length) {
+    const origin = await requestOrigin();
+    for (const email of emails) {
+      try {
+        await addOrganizerToClub(club.id, email, origin);
+      } catch {
+        failed.push(email);
+      }
+    }
+  }
+
   revalidatePath("/admin");
+  revalidatePath(`/admin/club/${club.id}`);
+  if (failed.length) throw new Error(`Club creado. No se pudieron añadir: ${failed.join(", ")}`);
+}
+
+/**
+ * Issue 48 — Renames a club. The club is identified by its stable UUID, so the
+ * name is free to change without affecting URLs, FKs or references.
+ */
+export async function updateClub(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const club_id = String(formData.get("club_id") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  if (!club_id) throw new Error("Club required.");
+  if (!name) throw new Error("Name required.");
+  await assertClubMember(club_id);
+  const { error } = await supabase.from("club").update({ name }).eq("id", club_id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/admin");
+  revalidatePath(`/admin/club/${club_id}`);
+  revalidatePath("/");
 }
 
 /** Throws unless the current user is a member of `clubId`. Returns their user id. */
@@ -124,38 +179,42 @@ async function requestOrigin(): Promise<string> {
 }
 
 /**
- * Issue 36/37 — Adds an organizer to a club by email. If the email already has an
- * account it is linked (a club_member row); otherwise an invitation email is sent
- * (Supabase inviteUserByEmail), which creates the pending account and lets them set
- * a password on first access (see /api/auth/confirm + /admin/accept). The
- * cross-user club_member insert goes through the service role after the caller's
- * membership is verified.
+ * Issue 36/37 — Links or invites an organizer email to a club via the service role.
+ * If the email already has an account it is linked (a club_member row); otherwise
+ * an invitation email is sent (Supabase inviteUserByEmail), which creates the
+ * pending account and lets them set a password on first access (see
+ * /api/auth/confirm + /admin/accept). The caller must have verified its own
+ * membership (or just created the club).
  */
+async function addOrganizerToClub(club_id: string, email: string, origin: string): Promise<void> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) throw new Error("Email required.");
+  const svc = createSupabaseServiceClient();
+  let userId: string;
+  const existing = await findUserByEmail(normalized);
+  if (existing) {
+    userId = existing.id;
+  } else {
+    const redirectTo = `${origin}/api/auth/confirm?next=/admin/accept`;
+    const { data, error } = await svc.auth.admin.inviteUserByEmail(normalized, { redirectTo });
+    if (error || !data?.user) throw new Error(error?.message ?? "Could not send the invitation.");
+    userId = data.user.id;
+  }
+  // Link to the club (idempotent: ignore if already a member).
+  const { error: eMember } = await svc
+    .from("club_member")
+    .upsert({ club_id, user_id: userId, role: "owner" }, { onConflict: "club_id,user_id" });
+  if (eMember) throw new Error(eMember.message);
+}
+
+/** Issue 36/37 — Adds an organizer to a club by email (single-email form). */
 export async function inviteOrganizer(formData: FormData) {
   const club_id = String(formData.get("club_id") ?? "");
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   if (!club_id) throw new Error("Club required.");
   if (!email) throw new Error("Email required.");
   await assertClubMember(club_id);
-
-  const svc = createSupabaseServiceClient();
-  let userId: string;
-  const existing = await findUserByEmail(email);
-  if (existing) {
-    userId = existing.id;
-  } else {
-    const redirectTo = `${await requestOrigin()}/api/auth/confirm?next=/admin/accept`;
-    const { data, error } = await svc.auth.admin.inviteUserByEmail(email, { redirectTo });
-    if (error || !data?.user) throw new Error(error?.message ?? "Could not send the invitation.");
-    userId = data.user.id;
-  }
-
-  // Link to the club (idempotent: ignore if already a member).
-  const { error: eMember } = await svc
-    .from("club_member")
-    .upsert({ club_id, user_id: userId, role: "owner" }, { onConflict: "club_id,user_id" });
-  if (eMember) throw new Error(eMember.message);
-
+  await addOrganizerToClub(club_id, email, await requestOrigin());
   revalidatePath(`/admin/club/${club_id}`);
 }
 
@@ -185,9 +244,33 @@ export async function removeOrganizer(formData: FormData) {
   revalidatePath(`/admin/club/${club_id}`);
 }
 
+/** Parses a JSON-array form field; returns [] on empty/invalid input. */
+function parseJsonArray(value: FormDataEntryValue | null): unknown[] {
+  const raw = String(value ?? "").trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Reads a string property from a parsed JSON object, trimmed. */
+function getStr(o: unknown, key: string): string {
+  if (typeof o === "object" && o !== null && key in o) {
+    return String((o as Record<string, unknown>)[key] ?? "").trim();
+  }
+  return "";
+}
+
 /**
- * Issue 29 — A competition is created inside the selected club (club_id from the
- * URL). RLS requires the organizer to be a member of that club.
+ * Issue 29/45/49 — A competition is created inside the selected club (club_id from
+ * the URL). RLS requires the organizer to be a member of that club. It also carries
+ * a visibility (issue 45, public by default) and an access code generated up front,
+ * and can be created with its place already set up (issue 49): sectors
+ * (river/venue/name), rounds (name/date) and lots (numbers), all optional and sent
+ * as JSON by the client form. Anglers/pairs are added afterwards in the view.
  */
 export async function createCompetition(formData: FormData) {
   const supabase = await createSupabaseServerClient();
@@ -195,11 +278,77 @@ export async function createCompetition(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   // Issue 16: a competition is individual or pairs. Defaults to pairs (Liga Duos).
   const type = String(formData.get("type") ?? "pairs") === "individual" ? "individual" : "pairs";
+  // Issue 45: public (listed) by default; private is code-gated.
+  const visibility = String(formData.get("visibility") ?? "public") === "private" ? "private" : "public";
   if (!club_id) throw new Error("Club required.");
   if (!name) throw new Error("Name required.");
-  const { error } = await supabase.from("competition").insert({ club_id, name, type });
-  if (error) throw new Error(error.message);
+
+  const { data: competition, error } = await supabase
+    .from("competition")
+    .insert({ club_id, name, type, visibility, access_code: generateAccessCode() })
+    .select("id")
+    .single();
+  if (error || !competition) throw new Error(error?.message ?? "Could not create the competition.");
+  const competition_id = competition.id as string;
+
+  // Issue 49 — optional place setup defined at creation.
+  const sectorRows = parseJsonArray(formData.get("sectors"))
+    .map((s) => ({
+      competition_id,
+      river: getStr(s, "river"),
+      venue: getStr(s, "venue"),
+      name: getStr(s, "name"),
+    }))
+    .filter((s) => s.name.length > 0);
+  if (sectorRows.length) {
+    const { error: e } = await supabase.from("sector").insert(sectorRows);
+    if (e) throw new Error(e.message);
+  }
+
+  const roundRows = parseJsonArray(formData.get("rounds"))
+    .map((r) => ({ competition_id, name: getStr(r, "name"), date: getStr(r, "date") || null }))
+    .filter((r) => r.name.length > 0 && r.date);
+  if (roundRows.length) {
+    const { error: e } = await supabase.from("round").insert(roundRows);
+    if (e) throw new Error(e.message);
+  }
+
+  const lotRows = parseJsonArray(formData.get("lots"))
+    .map((l) => Number(l))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .map((number) => ({ competition_id, number }));
+  if (lotRows.length) {
+    const { error: e } = await supabase.from("lot").insert(lotRows);
+    if (e) throw new Error(e.message);
+  }
+
   revalidatePath(`/admin/club/${club_id}`);
+  revalidatePath("/");
+}
+
+/**
+ * Issue 45 — Toggles a competition's visibility (public ↔ private). Ensures a
+ * private competition always has an access code (generates one if missing).
+ */
+export async function toggleCompetitionVisibility(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const to = String(formData.get("to") ?? "") === "private" ? "private" : "public";
+  if (!competition_id) throw new Error("Competition required.");
+
+  const update: { visibility: string; access_code?: string } = { visibility: to };
+  if (to === "private") {
+    const { data } = await supabase
+      .from("competition")
+      .select("access_code")
+      .eq("id", competition_id)
+      .single();
+    if (!data?.access_code) update.access_code = generateAccessCode();
+  }
+  const { error } = await supabase.from("competition").update(update).eq("id", competition_id);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/competition/${competition_id}`);
+  revalidatePath("/");
 }
 
 export async function createRound(formData: FormData) {
@@ -209,13 +358,11 @@ export async function createRound(formData: FormData) {
   const date = String(formData.get("date") ?? "");
   const start_time = String(formData.get("start_time") ?? "") || null;
   const end_time = String(formData.get("end_time") ?? "") || null;
-  // Issue 18: optional group index to pair this round with another for the standings.
-  const groupRaw = String(formData.get("group_index") ?? "").trim();
-  const group_index = groupRaw ? Number(groupRaw) : null;
+  // Issue 18/53: optional phase entered as a letter (A, B…) → 1-based group index.
+  const phaseRaw = String(formData.get("phase") ?? "").trim();
+  const group_index = phaseRaw ? phaseIndex(phaseRaw) : null;
   if (!competition_id || !name || !date) throw new Error("Competition, name and date required.");
-  if (group_index !== null && (!Number.isInteger(group_index) || group_index <= 0)) {
-    throw new Error("The group must be a positive integer.");
-  }
+  if (phaseRaw && group_index === null) throw new Error("The phase must be a letter (A, B, C…).");
   const { error } = await supabase
     .from("round")
     .insert({ competition_id, name, date, start_time, end_time, group_index });
@@ -231,12 +378,11 @@ export async function setRoundGroup(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
   const competition_id = String(formData.get("competition_id") ?? "");
-  const groupRaw = String(formData.get("group_index") ?? "").trim();
-  const group_index = groupRaw ? Number(groupRaw) : null;
+  // Issue 53: phase as a letter (A, B…); empty ungroups the round.
+  const phaseRaw = String(formData.get("phase") ?? "").trim();
+  const group_index = phaseRaw ? phaseIndex(phaseRaw) : null;
   if (!round_id) throw new Error("Round required.");
-  if (group_index !== null && (!Number.isInteger(group_index) || group_index <= 0)) {
-    throw new Error("The group must be a positive integer.");
-  }
+  if (phaseRaw && group_index === null) throw new Error("The phase must be a letter (A, B, C…).");
   const { error } = await supabase.from("round").update({ group_index }).eq("id", round_id);
   if (error) throw new Error(error.message);
   if (competition_id) revalidatePath(`/admin/competition/${competition_id}`);
@@ -291,12 +437,11 @@ export async function updateRound(formData: FormData) {
   const date = String(formData.get("date") ?? "");
   const start_time = String(formData.get("start_time") ?? "") || null;
   const end_time = String(formData.get("end_time") ?? "") || null;
-  const groupRaw = String(formData.get("group_index") ?? "").trim();
-  const group_index = groupRaw ? Number(groupRaw) : null;
+  // Issue 53: phase as a letter (A, B…); empty ungroups the round.
+  const phaseRaw = String(formData.get("phase") ?? "").trim();
+  const group_index = phaseRaw ? phaseIndex(phaseRaw) : null;
   if (!round_id || !name || !date) throw new Error("Round, name and date required.");
-  if (group_index !== null && (!Number.isInteger(group_index) || group_index <= 0)) {
-    throw new Error("The phase must be a positive integer.");
-  }
+  if (phaseRaw && group_index === null) throw new Error("The phase must be a letter (A, B, C…).");
 
   const { data: round } = await supabase.from("round").select("status").eq("id", round_id).single();
   if (!round) throw new Error("Round not found.");
@@ -363,15 +508,61 @@ export async function deleteRound(formData: FormData) {
 }
 
 /**
- * Issue 41 — Sectors are a competition-level reusable catalog (label). The name may
- * be a single stretch ("A") or a composite the pair self-organizes within ("17/18/19").
+ * Issue 41/50 — Sectors are a competition-level reusable catalog identified by
+ * river + venue (escenario/coto) + sector name. River and venue usually repeat, so
+ * the UI pre-fills them; the sector name may be a single stretch ("A") or a
+ * composite the pair self-organizes within ("17/18/19").
  */
 export async function createSector(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const competition_id = String(formData.get("competition_id") ?? "");
+  const river = String(formData.get("river") ?? "").trim();
+  const venue = String(formData.get("venue") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
-  if (!competition_id || !name) throw new Error("Competition and name required.");
-  const { error } = await supabase.from("sector").insert({ competition_id, name });
+  if (!competition_id || !name) throw new Error("Competition and sector name required.");
+  const { error } = await supabase.from("sector").insert({ competition_id, river, venue, name });
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/competition/${competition_id}`);
+}
+
+/** Issue 54 — Edits a sector's three fields, from within the competition view. */
+export async function updateSector(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const sector_id = String(formData.get("sector_id") ?? "");
+  const river = String(formData.get("river") ?? "").trim();
+  const venue = String(formData.get("venue") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  if (!competition_id || !sector_id) throw new Error("Competition and sector required.");
+  if (!name) throw new Error("Sector name required.");
+  const { error } = await supabase
+    .from("sector")
+    .update({ river, venue, name })
+    .eq("id", sector_id);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/admin/competition/${competition_id}`);
+}
+
+/**
+ * Issue 54 — Deletes a sector from within the competition view, with explicit
+ * confirmation. Refuses if the sector is still used by a round pattern
+ * (round_entry), to avoid breaking the standings — the organizer must reassign
+ * those entries first.
+ */
+export async function deleteSector(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const competition_id = String(formData.get("competition_id") ?? "");
+  const sector_id = String(formData.get("sector_id") ?? "");
+  if (!competition_id || !sector_id) throw new Error("Competition and sector required.");
+
+  const { count } = await supabase
+    .from("round_entry")
+    .select("id", { count: "exact", head: true })
+    .eq("sector_id", sector_id);
+  if ((count ?? 0) > 0) {
+    throw new Error("El sector está en uso por una o más mangas; reasigna esas entradas antes de borrarlo.");
+  }
+  const { error } = await supabase.from("sector").delete().eq("id", sector_id);
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/competition/${competition_id}`);
 }
@@ -461,6 +652,8 @@ export async function addEntry(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const round_id = String(formData.get("round_id") ?? "");
   const lot_id = String(formData.get("lot_id") ?? "");
+  // Issue 51: the rotation matrix posts competition_id so it can revalidate itself.
+  const competition_id = String(formData.get("competition_id") ?? "");
   const role = String(formData.get("role") ?? "fish") === "control" ? "control" : "fish";
   const sector_id = String(formData.get("sector_id") ?? "") || null;
   if (!round_id || !lot_id) throw new Error("Round and lot required.");
@@ -470,6 +663,7 @@ export async function addEntry(formData: FormData) {
     .upsert({ round_id, lot_id, role, sector_id }, { onConflict: "round_id,lot_id" });
   if (error) throw new Error(error.message);
   revalidatePath(`/admin/round/${round_id}`);
+  if (competition_id) revalidatePath(`/admin/competition/${competition_id}`);
 }
 
 export async function createPair(formData: FormData) {

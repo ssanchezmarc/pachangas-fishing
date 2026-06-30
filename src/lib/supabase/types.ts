@@ -30,12 +30,20 @@ export interface ClubMember {
   created_at: string;
 }
 
+/** Issue 45 — a competition is public (listed + openly accessible) or private
+ * (hidden, reachable only with its access code). Orthogonal to `status`. */
+export type CompetitionVisibility = "public" | "private";
+
 export interface Competition {
   id: string;
   club_id: string;
   name: string;
   type: CompetitionType;
   status: CompetitionStatus;
+  /** Issue 45 — public ⇒ on the home + no code needed; private ⇒ code-gated. */
+  visibility: CompetitionVisibility;
+  /** Issue 45 — code that unlocks a private competition's standings. */
+  access_code: string | null;
   scoring_config: ScoringConfig;
   aggregation_config: AggregationConfig;
   created_at: string;
@@ -82,9 +90,16 @@ export interface Pair {
  * A sector: a competition-level reusable label (issue 41). The name may be a single
  * stretch ("A") or a composite the pair self-organizes within ("17/18/19").
  */
+/**
+ * A sector (issues 41/50): a competition-level reusable label, identified by three
+ * fields — `river` + `venue` (escenario/coto) + `name` (the sector itself). River
+ * and venue usually repeat across a competition's sectors (the UI pre-fills them).
+ */
 export interface Sector {
   id: string;
   competition_id: string;
+  river: string;
+  venue: string;
   name: string;
 }
 

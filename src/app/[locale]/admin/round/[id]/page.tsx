@@ -14,6 +14,9 @@ import {
   setRoundWhatsappActive,
 } from "../../actions";
 import { possibleTransitions, allowsEditing } from "@/domain/round-status";
+import { phaseLabel } from "@/domain/phases";
+import { sectorLabel } from "@/domain/sector";
+import { SubmitButton } from "@/components/SubmitButton";
 import type { RoundEntry, Round, Angler, Scorecard, Sector, Lot, Claim } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
@@ -74,7 +77,7 @@ export default async function AdminRoundPage({
     }
   }
   const anglerNameById = new Map(anglerList.map((a) => [a.id, a.name]));
-  const sectorNameById = new Map(secs.map((s) => [s.id, s.name]));
+  const sectorNameById = new Map(secs.map((s) => [s.id, sectorLabel(s)]));
   const entryById = new Map(entryList.map((e) => [e.id, e]));
   const lotById = new Map(lotList.map((l) => [l.id, l]));
   // Who a lot is drawn to: an angler (individual) or a pair (pairs); may be undrawn.
@@ -160,17 +163,14 @@ export default async function AdminRoundPage({
                 <input name="start_time" type="time" defaultValue={r.start_time?.slice(0, 5) ?? ""} />
                 <input name="end_time" type="time" defaultValue={r.end_time?.slice(0, 5) ?? ""} />
                 <input
-                  name="group_index"
-                  type="number"
-                  min={1}
-                  defaultValue={r.group_index ?? ""}
+                  name="phase"
+                  maxLength={3}
+                  defaultValue={r.group_index ? phaseLabel(r.group_index) : ""}
                   placeholder={t("phase")}
                   style={{ width: 110 }}
                 />
               </div>
-              <button className="primary" type="submit">
-                {t("saveRound")}
-              </button>
+              <SubmitButton pendingLabel={t("working")}>{t("saveRound")}</SubmitButton>
             </form>
             <form
               action={deleteRound}
@@ -238,7 +238,7 @@ export default async function AdminRoundPage({
         {secs.length === 0 && <span className="muted">{t("noSectorsRound")}</span>}
         {secs.map((s) => (
           <span key={s.id} className="badge open" style={{ marginRight: 6 }}>
-            {s.name}
+            {sectorLabel(s)}
           </span>
         ))}
       </section>
@@ -316,14 +316,12 @@ export default async function AdminRoundPage({
               <option value="">{t("sectorPlaceholder")}</option>
               {secs.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name}
+                  {sectorLabel(s)}
                 </option>
               ))}
             </select>
           </div>
-          <button className="primary" type="submit">
-            {t("addEntry")}
-          </button>
+          <SubmitButton pendingLabel={t("working")}>{t("addEntry")}</SubmitButton>
         </form>
       </section>
 
@@ -368,9 +366,7 @@ export default async function AdminRoundPage({
             {t("undersizedLabel")}
             <input name="undersized" type="number" min={0} defaultValue={0} style={{ display: "block", width: 120 }} />
           </label>
-          <button className="primary" type="submit">
-            {t("saveManual")}
-          </button>
+          <SubmitButton pendingLabel={t("working")}>{t("saveManual")}</SubmitButton>
         </form>
         <form action={processScorecardReading} style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
           <input type="hidden" name="round_id" value={id} />
@@ -393,9 +389,7 @@ export default async function AdminRoundPage({
               </option>
             ))}
           </select>
-          <button className="tab" type="submit">
-            {t("processAIReading")}
-          </button>
+          <SubmitButton className="tab" pendingLabel={t("working")}>{t("processAIReading")}</SubmitButton>
         </form>
       </section>
 

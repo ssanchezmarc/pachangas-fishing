@@ -3,6 +3,7 @@ import { Link } from "@/i18n/navigation";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createClub, signOut } from "./actions";
+import { SubmitButton } from "@/components/SubmitButton";
 import type { Club } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
@@ -56,11 +57,11 @@ export default async function AdminPage({ params }: { params: Promise<{ locale: 
             </Link>
           </div>
         ))}
-        <form action={createClub} style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
+        <form action={createClub} style={{ marginTop: "0.75rem", display: "grid", gap: "0.5rem", maxWidth: 480 }}>
           <input name="name" placeholder={t("newClub")} required />
-          <button className="primary" type="submit">
-            {t("createClub")}
-          </button>
+          <textarea name="emails" placeholder={t("clubOrganizerEmails")} rows={2} />
+          <span className="muted" style={{ fontSize: "0.8rem" }}>{t("clubOrganizerEmailsHelp")}</span>
+          <SubmitButton pendingLabel={t("working")}>{t("createClub")}</SubmitButton>
         </form>
       </section>
     </main>

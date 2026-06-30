@@ -15,15 +15,20 @@ export const dynamic = "force-dynamic";
  */
 export default async function CompetitionPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ locale: string; id: string }>;
+  searchParams: Promise<{ code?: string }>;
 }) {
   const { locale, id } = await params;
+  const { code } = await searchParams;
   setRequestLocale(locale);
   const t = await getTranslations();
 
-  const data = await loadCompetitionStandings(id);
+  // Issue 45 — a private competition needs its access code (?code=… or via /c/{code}).
+  const data = await loadCompetitionStandings(id, code);
   if (!data) notFound();
+  const codeQs = code ? `?code=${encodeURIComponent(code)}` : "";
 
   return (
     <main className="container">
@@ -42,7 +47,7 @@ export default async function CompetitionPage({
       <h2>{t("competition.overallStandings")}</h2>
       <LiveStandings
         type={data.competition.type}
-        endpoint={`/api/competition/${id}/standings`}
+        endpoint={`/api/competition/${id}/standings${codeQs}`}
         initial={{ individual: data.individual, pairs: data.pairs }}
       />
 
@@ -73,7 +78,7 @@ export default async function CompetitionPage({
       <h2 style={{ marginTop: "2rem" }}>{t("competition.roundsHeading")}</h2>
       {data.rounds.length === 0 && <p className="muted">{t("competition.noRounds")}</p>}
       {data.rounds.map((r) => (
-        <Link key={r.id} href={`/round/${r.id}`} className="card" style={{ display: "block" }}>
+        <Link key={r.id} href={`/round/${r.id}${codeQs}`} className="card" style={{ display: "block" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <strong>{r.name}</strong>

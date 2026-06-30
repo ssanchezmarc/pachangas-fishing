@@ -4,6 +4,7 @@
  */
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PUBLIC_COMPETITION_STATUSES, isPubliclyVisible } from "@/domain/competition-status";
+import { sectorLabel } from "@/domain/sector";
 import {
   buildRoundStandings,
   buildCompetitionStandings,
@@ -78,8 +79,10 @@ export interface CompetitionListItem extends Competition {
 
 /**
  * Lists competitions for the public landing (issue 15). Only publicly-visible
- * statuses are returned — draft and closed stay organizers-only (issue 28).
- * Each item also carries its club name and the date range of its rounds (issue 38).
+ * statuses are returned — draft and closed stay organizers-only (issue 28) — and
+ * only public-visibility ones (issue 45): private competitions are hidden from the
+ * home and reached by access code instead. Each item also carries its club name
+ * and the date range of its rounds (issue 38).
  */
 export async function listCompetitions(): Promise<CompetitionListItem[]> {
   const supabase = await createSupabaseServerClient();
@@ -87,6 +90,7 @@ export async function listCompetitions(): Promise<CompetitionListItem[]> {
     .from("competition")
     .select("*, club(name), round(date)")
     .in("status", PUBLIC_COMPETITION_STATUSES)
+    .eq("visibility", "public")
     .order("created_at", { ascending: false });
   if (error) throw error;
 
@@ -112,6 +116,34 @@ export async function listCompetitions(): Promise<CompetitionListItem[]> {
   });
 }
 
+/**
+ * Issue 45 — Whether a competition's public pages are reachable: a public one
+ * always is; a private one only with a matching access code.
+ */
+function visibilityAllows(
+  competition: { visibility?: string | null; access_code?: string | null },
+  accessCode?: string | null,
+): boolean {
+  if (competition.visibility !== "private") return true;
+  return Boolean(accessCode) && accessCode === competition.access_code;
+}
+
+/**
+ * Issue 45 — Resolves a competition id from its access code (for the /c/{code}
+ * shortcut and the "type your code" form). `null` if no competition has that code.
+ */
+export async function resolveCompetitionByCode(code: string): Promise<string | null> {
+  const trimmed = code.trim();
+  if (!trimmed) return null;
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase
+    .from("competition")
+    .select("id")
+    .eq("access_code", trimmed)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
 /** Lists all rounds (for the public landing). */
 export async function listRounds(): Promise<(Round & { competition: string })[]> {
   const supabase = await createSupabaseServerClient();
@@ -126,8 +158,15 @@ export async function listRounds(): Promise<(Round & { competition: string })[]>
   }));
 }
 
-/** Loads and computes a round's standings. `null` if it does not exist. */
-export async function loadRoundStandings(roundId: string): Promise<StandingsView | null> {
+/**
+ * Loads and computes a round's standings. `null` if it does not exist, its
+ * competition is not publicly visible (issue 28), or it is private and the access
+ * code does not match (issue 45).
+ */
+export async function loadRoundStandings(
+  roundId: string,
+  accessCode?: string | null,
+): Promise<StandingsView | null> {
   const supabase = await createSupabaseServerClient();
 
   const { data: round } = await supabase.from("round").select("*").eq("id", roundId).single();
@@ -138,8 +177,10 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
     .select("*")
     .eq("id", round.competition_id)
     .single();
-  // A round of a non-public competition (draft / closed) is hidden too (issue 28).
+  // A round of a non-public competition (draft / closed) is hidden too (issue 28),
+  // and a private one needs its access code (issue 45).
   if (!competition || !isPubliclyVisible(competition.status)) return null;
+  if (!visibilityAllows(competition, accessCode)) return null;
 
   const [{ data: entries }, { data: sectors }, { data: anglers }, { data: pairs }] =
     await Promise.all([
@@ -157,7 +198,7 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
     .in("status", ["auto", "confirmed"]);
 
   const entryById = new Map((entries ?? []).map((e: RoundEntry) => [e.id, e]));
-  const sectorNameById = new Map((sectors ?? []).map((s: Sector) => [s.id, s.name]));
+  const sectorNameById = new Map((sectors ?? []).map((s: Sector) => [s.id, sectorLabel(s)]));
   const anglerNameById = new Map((anglers ?? []).map((a: Angler) => [a.id, a.name]));
 
   // The angler is the member who turned in the plica (issue 42); only fishing
@@ -226,6 +267,7 @@ export async function loadRoundStandings(roundId: string): Promise<StandingsView
  */
 export async function loadCompetitionStandings(
   competitionId: string,
+  accessCode?: string | null,
 ): Promise<CompetitionStandingsView | null> {
   const supabase = await createSupabaseServerClient();
 
@@ -234,8 +276,10 @@ export async function loadCompetitionStandings(
     .select("*")
     .eq("id", competitionId)
     .single();
-  // Draft / closed competitions are not public (issue 28).
+  // Draft / closed competitions are not public (issue 28); a private one needs its
+  // access code (issue 45).
   if (!competition || !isPubliclyVisible(competition.status)) return null;
+  if (!visibilityAllows(competition, accessCode)) return null;
 
   const { data: rounds } = await supabase
     .from("round")

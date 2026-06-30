@@ -8,15 +8,20 @@ export const dynamic = "force-dynamic";
 
 export default async function RoundPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ locale: string; id: string }>;
+  searchParams: Promise<{ code?: string }>;
 }) {
   const { locale, id } = await params;
+  const { code } = await searchParams;
   setRequestLocale(locale);
   const t = await getTranslations();
 
-  const data = await loadRoundStandings(id);
+  // Issue 45 — a private competition's round needs its access code.
+  const data = await loadRoundStandings(id, code);
   if (!data) notFound();
+  const codeQs = code ? `?code=${encodeURIComponent(code)}` : "";
 
   const provisionalOrFinal = data.round.status === "provisional" || data.round.status === "final";
 
@@ -45,7 +50,7 @@ export default async function RoundPage({
 
       <LiveStandings
         type={data.competition.type}
-        endpoint={`/api/round/${id}/standings`}
+        endpoint={`/api/round/${id}/standings${codeQs}`}
         initial={{ individual: data.individual, pairs: data.pairs }}
       />
     </main>

@@ -1,6 +1,7 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { AccessCodeForm } from "@/components/AccessCodeForm";
 import { listCompetitions } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
@@ -60,6 +61,15 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           </Link>
         );
       })}
+
+      {/* Issue 45 — reach a private competition with the code organizers hand out. */}
+      <section style={{ marginTop: "2rem" }}>
+        <h2>{t("home.accessCodeHeading")}</h2>
+        <p className="muted">{t("home.accessCodeHelp")}</p>
+        <AccessCodeForm
+          labels={{ placeholder: t("home.accessCodePlaceholder"), submit: t("home.accessCodeSubmit") }}
+        />
+      </section>
 
       <p className="muted" style={{ marginTop: "2rem" }}>
         <Link href="/admin">{t("home.organizersAccess")}</Link>
